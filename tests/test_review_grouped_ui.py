@@ -2,8 +2,8 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from decimal import Decimal
 from openpyxl import load_workbook
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QMessageBox
 from wechat_work_recorder.app import MainWindow, HEADERS
 from wechat_work_recorder.models import Employee
 from wechat_work_recorder.roster import save_private_roster
@@ -38,7 +38,7 @@ def test_review_adds_record_without_rewriting_original(monkeypatch, tmp_path):
     assert '8513-65*1.7' in window.output.textCursor().selectedText()
     monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: ('8513', True))
     entries = iter([('65', True), ('1.70', True)])
-    monkeypatch.setattr(QInputDialog, 'getText', lambda *args: next(entries))
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args, **kwargs: next(entries))
     window.review_ambiguous_line()
     assert window.output.toPlainText() == source
     assert window.table.rowCount() == 2
@@ -53,6 +53,35 @@ def test_review_adds_record_without_rewriting_original(monkeypatch, tmp_path):
         Decimal('65'), Decimal('1.70'), 3, 1)
     assert window.table.rowSpan(0, 7) == 2
     assert window.table.item(0, 7).text() == '155.50'
+    window.close()
+
+
+def test_review_opens_real_price_dialog_after_quantity(monkeypatch, tmp_path):
+    app, window = setup_window(monkeypatch, tmp_path)
+    app.clipboard().setText('测试昵称甲\n2026/10/12\n8513-65*1.7')
+    window.import_clipboard_text()
+    window.review_list.setCurrentRow(0)
+    monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: ('8513', True))
+    original_get_text = QInputDialog.getText
+    seen = []
+
+    def get_text(*args, **kwargs):
+        def complete_dialog():
+            dialog = app.activeModalWidget()
+            assert isinstance(dialog, QInputDialog)
+            seen.append(dialog.windowTitle())
+            dialog.findChild(QLineEdit).setText('65' if len(seen) == 1 else '1.7')
+            dialog.accept()
+
+        QTimer.singleShot(0, complete_dialog)
+        return original_get_text(*args, **kwargs)
+
+    monkeypatch.setattr(QInputDialog, 'getText', get_text)
+    window.review_ambiguous_line()
+    assert seen == ['确认数量', '确认单价']
+    assert window.table.rowCount() == 1
+    assert window.total_label.text() == '总计：110.50元'
+    assert not window.unresolved_warnings
     window.close()
 
 
@@ -117,7 +146,7 @@ def test_review_one_of_multiple_pending_lines_only_clears_that_line(monkeypatch,
     window.review_list.setCurrentRow(0)
     monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: ('8513', True))
     entries = iter([('65', True), ('1.70', True)])
-    monkeypatch.setattr(QInputDialog, 'getText', lambda *args: next(entries))
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args, **kwargs: next(entries))
     window.review_ambiguous_line()
     assert window.table.rowCount() == 2
     assert len(window.unresolved_warnings) == 1
@@ -149,7 +178,7 @@ def test_review_rejects_duplicate_and_explains_failure(monkeypatch, tmp_path):
     window.review_list.setCurrentRow(0)
     monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: ('8513', True))
     entries = iter([('65', True), ('1.70', True)])
-    monkeypatch.setattr(QInputDialog, 'getText', lambda *args: next(entries))
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args, **kwargs: next(entries))
     window.review_ambiguous_line()
     assert window.table.rowCount() == 1
     assert window.unresolved_warnings and not window.review_overrides

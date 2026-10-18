@@ -245,7 +245,7 @@ class MainWindow(QMainWindow):
             current = self.catalog.default_price(code)
             price, ok = QInputDialog.getText(self, "已确认现行价",
                 f"{code}；历史参考：{historical}\n现行默认价（留空仅保存货号）：",
-                str(current) if current is not None else "")
+                text=str(current) if current is not None else "")
             if ok and price.strip():
                 self.catalog.set_default(code, Decimal(price.strip()))
             self.needs_parse = True
@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
             return
         price, ok = QInputDialog.getText(self, '确认单价',
             f'原文：{original}\n历史参考：{self.catalog.historical_prices(code)}\n请填确认后的单价：',
-            str(self.catalog.default_price(code) or ''))
+            text=str(self.catalog.default_price(code) or ''))
         if not ok:
             return
         try:

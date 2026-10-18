@@ -39,7 +39,7 @@ def test_review_choice_reparses_and_recalculates(monkeypatch, tmp_path):
     selections = iter([0, 1])
     monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: (args[3][next(selections)], True))
     entries = iter([('70', True), ('1.7', True)])
-    monkeypatch.setattr(QInputDialog, 'getText', lambda *args: next(entries))
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args, **kwargs: next(entries))
     window.review_ambiguous_line()
     assert not window.unresolved_warnings
     assert window.table.rowCount() == 2
