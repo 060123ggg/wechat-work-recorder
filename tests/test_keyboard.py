@@ -8,6 +8,11 @@ from PySide6.QtWidgets import QApplication
 from wechat_work_recorder.app import MainWindow
 
 
+@pytest.fixture(autouse=True)
+def use_legacy_roster_for_existing_window_tests(monkeypatch):
+    monkeypatch.setattr("wechat_work_recorder.app.load_builtin_roster", lambda: [])
+
+
 class ControlledOcr:
     def __init__(self):
         self.fail = False

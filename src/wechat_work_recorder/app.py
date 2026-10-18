@@ -8,7 +8,12 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QInputDialog)
-from .models import WorkKind, WorkRecord
+from .models import Employee, WorkKind, WorkRecord
+from .bindings import BindingConflict, NicknameBindingStore
+from .binding_dialog import BindingDialog
+from .roster import load_builtin_roster
+from .wechat_text import nickname_candidates
+from .employees import EmployeeDirectory
 from .ocr import TesseractOcr
 from .parser import parse_messages, record_key
 from .payroll import calculate_amount
@@ -23,6 +28,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ocr = ocr or TesseractOcr()
         self.employees, self.groups = load_settings()
+        self.roster = load_builtin_roster()
+        self.bindings = NicknameBindingStore()
+        if self.roster:
+            self.bindings.install_roster(self.roster)
+            self.employees = [employee.name for employee in self.roster]
+        self.employee_by_id = {employee.employee_id: employee for employee in self.roster}
         self.unresolved_warnings = []
         self.saved_record_keys: set[tuple] = set()
         self.needs_parse = False
@@ -30,11 +41,17 @@ class MainWindow(QMainWindow):
         self.resize(1050, 720)
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("先配置员工和群；选群后 Ctrl+V 粘贴截图。OCR 原文与记录可修改，确认后仅能保存新模拟账本。"))
+        layout.addWidget(QLabel("先设置微信群；复制聊天文字后点导入，或选群后 Ctrl+V 粘贴截图。确认后仅能保存新模拟账本。"))
         controls = QHBoxLayout()
         self.settings_button = QPushButton("设置员工和群")
         self.settings_button.clicked.connect(self.edit_settings)
         controls.addWidget(self.settings_button)
+        self.bindings_button = QPushButton("管理昵称绑定")
+        self.bindings_button.clicked.connect(self.manage_bindings)
+        controls.addWidget(self.bindings_button)
+        self.import_button = QPushButton("导入微信复制文字")
+        self.import_button.clicked.connect(self.import_clipboard_text)
+        controls.addWidget(self.import_button)
         self.group_combo = QComboBox()
         self.group_combo.addItems(self.groups)
         controls.addWidget(QLabel("当前微信群："))
@@ -64,6 +81,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(panel)
         QApplication.instance().installEventFilter(self)
 
+    def closeEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        self.bindings.close()
+        super().closeEvent(event)
+
     def eventFilter(self, watched, event):
         if (event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_V
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -77,9 +99,12 @@ class MainWindow(QMainWindow):
         self.needs_parse = True
 
     def edit_settings(self):
-        names, ok = QInputDialog.getMultiLineText(self, "员工姓名", "每行一名员工，最多17名：", "\n".join(self.employees))
-        if not ok:
-            return
+        if self.roster:
+            names = "\n".join(self.employees)
+        else:
+            names, ok = QInputDialog.getMultiLineText(self, "员工姓名", "每行一名员工，最多17名：", "\n".join(self.employees))
+            if not ok:
+                return
         groups, ok = QInputDialog.getMultiLineText(self, "微信群", "每行一个群名，最多3个：", "\n".join(self.groups))
         if not ok:
             return
@@ -95,6 +120,50 @@ class MainWindow(QMainWindow):
         self.group_combo.addItems(self.groups)
         self.table.setRowCount(0)
         self.unresolved_warnings = []
+
+    def manage_bindings(self):
+        if not self.roster:
+            QMessageBox.warning(self, "缺少正式名册", "尚未内置17名员工的正式工号和姓名，不能建立可信绑定")
+            return
+        BindingDialog(self.bindings, self.groups, self).exec()
+        self.table.setRowCount(0)
+        self.needs_parse = True
+
+    def import_clipboard_text(self):
+        if not self.roster:
+            QMessageBox.warning(self, "缺少正式名册", "尚未内置17名员工的正式工号和姓名，不能确认微信文字中的员工")
+            return
+        copied = QApplication.clipboard().text().strip()
+        if not copied:
+            QMessageBox.warning(self, "剪贴板为空", "请先在微信中复制聊天文字")
+            return
+        self.output.setPlainText(copied)
+        self.parse_text()
+
+    def resolved_directory(self, group: str) -> EmployeeDirectory:
+        aliases: dict[str, list[str]] = {}
+        for bound_group, nickname, employee_id, _ in self.bindings.list_bindings():
+            if bound_group == group:
+                aliases.setdefault(employee_id, []).append(nickname)
+        return EmployeeDirectory([Employee(employee_id, names[0], tuple(names[1:]))
+                                  for employee_id, names in aliases.items()], [group])
+
+    def confirm_unknown_nicknames(self, group: str, text: str) -> list[str]:
+        warnings = []
+        for nickname in nickname_candidates(text, self.groups):
+            if self.bindings.resolve(group, nickname):
+                continue
+            options = ["请选择员工…"] + [f"{employee.employee_id}  {employee.name}" for employee in self.roster]
+            choice, ok = QInputDialog.getItem(self, "确认微信昵称", f"“{nickname}”在“{group}”中尚未绑定。请选择员工：", options, 0, False)
+            if not ok or not choice or choice == options[0]:
+                warnings.append(f"昵称“{nickname}”未确认员工，禁止保存")
+                continue
+            employee_id = self.roster[options.index(choice) - 1].employee_id
+            try:
+                self.bindings.bind(group, nickname, employee_id)
+            except BindingConflict as exc:
+                warnings.append(f"昵称“{nickname}”绑定冲突：{exc}")
+        return warnings
 
     def paste_image(self):
         clipboard = QApplication.clipboard()
@@ -125,22 +194,27 @@ class MainWindow(QMainWindow):
         detected_groups = [g for g in self.groups if g in self.output.toPlainText()]
         if len(detected_groups) == 1:
             self.group_combo.setCurrentText(detected_groups[0])
-        result = parse_messages(self.output.toPlainText(), directory_from_settings(self.employees, self.groups), self.group_combo.currentText())
-        self.unresolved_warnings = list(result.warnings)
+        group = self.group_combo.currentText()
+        identity_warnings = self.confirm_unknown_nicknames(group, self.output.toPlainText()) if self.roster else []
+        directory = self.resolved_directory(group) if self.roster else directory_from_settings(self.employees, self.groups)
+        candidates = set(nickname_candidates(self.output.toPlainText(), self.groups)) if self.roster else None
+        result = parse_messages(self.output.toPlainText(), directory, group, sender_hints=candidates)
+        self.unresolved_warnings = identity_warnings + list(result.warnings)
         self.needs_parse = False
         self.table.setRowCount(0)
         for record in result.records:
             self.add_record(record)
         self.refresh_total()
-        msg = f"识别 {len(result.records)} 条；需人工核对 {len(result.warnings)} 行"
+        msg = f"识别 {len(result.records)} 条；需人工核对 {len(self.unresolved_warnings)} 项"
         self.statusBar().showMessage(msg)
-        if result.warnings:
-            QMessageBox.warning(self, "未解析的内容", "\n".join(result.warnings))
+        if self.unresolved_warnings:
+            QMessageBox.warning(self, "未解析的内容", "\n".join(self.unresolved_warnings))
 
     def add_record(self, record: WorkRecord):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        name = next(e for e in self.employees if str(self.employees.index(e) + 1) == record.employee_id)
+        name = (self.employee_by_id[record.employee_id].name if self.roster else
+                next(e for e in self.employees if str(self.employees.index(e) + 1) == record.employee_id))
         values = [name, record.work_date.isoformat(), record.group_id, record.kind.value,
                   record.item_code or "", str(record.quantity or ""), str(record.unit_price or ""),
                   str(record.hours or ""), str(calculate_amount(record))]
@@ -187,7 +261,9 @@ class MainWindow(QMainWindow):
             if values[0] not in self.employees or values[2] not in self.groups:
                 raise ValueError(f"第{row + 1}行员工或群不在设置中")
             kind = WorkKind(values[3])
-            record = WorkRecord(str(self.employees.index(values[0]) + 1), date.fromisoformat(values[1]), kind,
+            employee_id = (next(e.employee_id for e in self.roster if e.name == values[0]) if self.roster
+                           else str(self.employees.index(values[0]) + 1))
+            record = WorkRecord(employee_id, date.fromisoformat(values[1]), kind,
                 values[2], self.output.toPlainText(), values[4] or None,
                 Decimal(values[5]) if values[5] else None,
                 Decimal(values[6]) if values[6] else None,
@@ -229,7 +305,11 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    window = MainWindow()
+    try:
+        window = MainWindow()
+    except (BindingConflict, ValueError) as exc:
+        QMessageBox.critical(None, "员工名册或绑定冲突", str(exc))
+        return 1
     window.show()
     return app.exec()
 

@@ -47,7 +47,8 @@ def parse_hours(value: str) -> Decimal:
     return result
 
 
-def parse_messages(text: str, directory: EmployeeDirectory, group_id: str) -> ParseResult:
+def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
+                   sender_hints: set[str] | None = None) -> ParseResult:
     directory.require_group(group_id)
     records: list[WorkRecord] = []
     warnings: list[str] = []
@@ -129,6 +130,8 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str) -> Pa
             matched_people = [employee for employee in directory.employees
                               if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line)
                                      for name in (employee.name, *employee.aliases))]
+            unknown_sender = bool(sender_hints and not matched_people and any(
+                re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line) for name in sender_hints))
             piece_marker = re.search(r"货号", line)
             compact = COMPACT_PIECE.search(line)
             standalone_code = STANDALONE_CODE.fullmatch(line)
@@ -154,7 +157,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str) -> Pa
                         pass
                 if complete_piece or complete_hour:
                     finish_pending()
-            if pending and (new_kind is not None or date_match or matched_people):
+            if pending and (new_kind is not None or date_match or matched_people or unknown_sender):
                 finish_pending()
             if date_match:
                 try:
@@ -166,6 +169,9 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str) -> Pa
                 current_employee = matched_people[0].employee_id if len(matched_people) == 1 else None
                 if len(matched_people) != 1:
                     warnings.append(f"第{line_number}行需人工核对：员工不唯一")
+            elif unknown_sender:
+                current_employee = None
+                warnings.append(f"第{line_number}行需人工核对：微信昵称尚未确认")
             if new_kind is not None:
                 pending = [line]
                 pending_kind = new_kind
