@@ -9,6 +9,13 @@ DATE = re.compile(r"(?P<year>\d{4})[-/年](?P<month>\d{1,2})[-/月](?P<day>\d{1,
 CODE = re.compile(r"货号\s*[:：]?\s*(?P<value>[A-Za-z0-9][A-Za-z0-9._/-]*)")
 QUANTITY = re.compile(r"数量\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)(?=\s|件|个|单价|$)")
 PRICE = re.compile(r"单价\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)(?=\s|元|$)")
+COMPACT_PIECE = re.compile(
+    r"(?<![A-Za-z0-9._/-])(?P<code>[A-Za-z0-9][A-Za-z0-9._/-]*)\s+"
+    r"(?P<qty>\d+(?:\.\d+)?)\s*[＊*×xX]\s*"
+    r"(?P<price>\d+(?:\.\d+)?)(?=\s|元|计时|工时|$|[,，;；])"
+)
+STANDALONE_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
+WORKLIKE = re.compile(r"货号|数量|单价|计时|工时|\d+(?:\.\d+)?\s*[＊*×xX]|[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
 HOURLY_START = re.compile(r"计时|工时|\d+(?:\.\d+)?\s*(?:小时|时)")
 HOUR_VALUE = re.compile(
     r"^(?:计时|工时)?\s*[:：]?\s*(?P<hours>\d+(?:\.\d+)?)\s*"
@@ -65,13 +72,24 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str) -> Pa
                 code = CODE.search(body)
                 quantity = QUANTITY.search(body)
                 price = PRICE.search(body)
-                if not (code and quantity and price):
+                compact_matches = list(COMPACT_PIECE.finditer(body))
+                if len(compact_matches) > 1:
+                    raise ValueError("多条计件内容混在一起")
+                compact = compact_matches[0] if compact_matches else None
+                if code and quantity and price:
+                    item_code = code.group("value")
+                    qty, unit_price = Decimal(quantity.group("value")), Decimal(price.group("value"))
+                elif compact:
+                    item_code = compact.group("code")
+                    qty, unit_price = Decimal(compact.group("qty")), Decimal(compact.group("price"))
+                    if code and code.group("value") != item_code:
+                        raise ValueError("货号存在冲突")
+                else:
                     raise ValueError("货号、数量或单价不完整")
-                qty, unit_price = Decimal(quantity.group("value")), Decimal(price.group("value"))
-                if qty <= 0 or unit_price < 0:
-                    raise ValueError("数量或单价无效")
+                if DATE.fullmatch(item_code) or qty <= 0 or unit_price < 0:
+                    raise ValueError("货号、数量或单价无效")
                 record = WorkRecord(pending_employee, pending_date, WorkKind.PIECE, group_id,
-                                    body, code.group("value"), qty, unit_price)
+                                    body, item_code, qty, unit_price)
             else:
                 marker = HOURLY_START.search(body)
                 if marker is None:
@@ -89,43 +107,79 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str) -> Pa
         pending = []
         pending_kind = None
 
-    for line_number, raw_line in enumerate(text.splitlines(), 1):
-        line = raw_line.strip()
-        if not line:
+    # 截图 OCR 通常换行；也接受用户粘贴的反斜杠分隔示例。
+    for line_number, raw_line in enumerate(text.replace("\\", "\n").splitlines(), 1):
+        raw_line = raw_line.strip()
+        if not raw_line:
             continue
-        date_match = DATE.search(line)
-        matched_people = [employee for employee in directory.employees
-                          if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line)
-                                 for name in (employee.name, *employee.aliases))]
-        piece_marker = re.search(r"货号", line)
-        hour_marker = HOURLY_START.search(line)
-        new_kind = WorkKind.PIECE if piece_marker else WorkKind.HOURLY if hour_marker else None
-        if (new_kind == WorkKind.HOURLY and pending_kind == WorkKind.HOURLY
-                and len(pending) == 1 and re.search(r"(?:计时|工时)\s*[:：]?\s*$", pending[0])
-                and not re.search(r"计时|工时", line)):
-            new_kind = None
-        if pending and (new_kind is not None or date_match or matched_people):
-            finish_pending()
-        if date_match:
-            try:
-                current_date = date(*(int(date_match.group(key)) for key in ("year", "month", "day")))
-            except ValueError:
-                current_date = None
-                warnings.append(f"第{line_number}行需人工核对：日期无效")
-        if matched_people:
-            current_employee = matched_people[0].employee_id if len(matched_people) == 1 else None
-            if len(matched_people) != 1:
-                warnings.append(f"第{line_number}行需人工核对：员工不唯一")
-        if piece_marker and hour_marker:
-            warnings.append(f"第{line_number}行需人工核对：同时包含按件和计时")
-            continue
-        if new_kind is not None:
-            pending = [line]
-            pending_kind = new_kind
-            pending_line = line_number
-            pending_date = current_date
-            pending_employee = current_employee
-        elif pending:
-            pending.append(line)
+        labelled_piece = re.search(r"货号", raw_line)
+        compact_piece = COMPACT_PIECE.search(raw_line)
+        piece_start = (labelled_piece or compact_piece).start() if (labelled_piece or compact_piece) else None
+        hourly_label = re.search(r"计时|工时", raw_line)
+        hour_start = hourly_label.start() if hourly_label else None
+        if piece_start is not None and hour_start is not None:
+            split_at = max(piece_start, hour_start)
+            segments = (raw_line[:split_at].strip(), raw_line[split_at:].strip())
+        else:
+            segments = (raw_line,)
+        for line in segments:
+            if not line:
+                continue
+            date_match = DATE.search(line)
+            matched_people = [employee for employee in directory.employees
+                              if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line)
+                                     for name in (employee.name, *employee.aliases))]
+            piece_marker = re.search(r"货号", line)
+            compact = COMPACT_PIECE.search(line)
+            standalone_code = STANDALONE_CODE.fullmatch(line)
+            hour_marker = HOURLY_START.search(line)
+            new_kind = (WorkKind.PIECE if piece_marker or compact or (standalone_code and pending_kind != WorkKind.PIECE)
+                        else WorkKind.HOURLY if hour_marker else None)
+            if (new_kind == WorkKind.HOURLY and pending_kind == WorkKind.HOURLY
+                    and len(pending) == 1 and re.search(r"(?:计时|工时)\s*[:：]?\s*$", pending[0])
+                    and not re.search(r"计时|工时", line)):
+                new_kind = None
+            if pending and new_kind is None and WORKLIKE.search(line):
+                body = " ".join(pending)
+                complete_piece = (COMPACT_PIECE.search(body) is not None or
+                                  all(pattern.search(body) for pattern in (CODE, QUANTITY, PRICE)))
+                complete_hour = False
+                if pending_kind == WorkKind.HOURLY:
+                    marker = HOURLY_START.search(body)
+                    try:
+                        if marker:
+                            parse_hours(body[marker.start():])
+                            complete_hour = True
+                    except ValueError:
+                        pass
+                if complete_piece or complete_hour:
+                    finish_pending()
+            if pending and (new_kind is not None or date_match or matched_people):
+                finish_pending()
+            if date_match:
+                try:
+                    current_date = date(*(int(date_match.group(key)) for key in ("year", "month", "day")))
+                except ValueError:
+                    current_date = None
+                    warnings.append(f"第{line_number}行需人工核对：日期无效")
+            if matched_people:
+                current_employee = matched_people[0].employee_id if len(matched_people) == 1 else None
+                if len(matched_people) != 1:
+                    warnings.append(f"第{line_number}行需人工核对：员工不唯一")
+            if new_kind is not None:
+                pending = [line]
+                pending_kind = new_kind
+                pending_line = line_number
+                pending_date = current_date
+                pending_employee = current_employee
+            elif pending:
+                pending.append(line)
+            else:
+                residue = DATE.sub("", line)
+                for employee in directory.employees:
+                    for name in (employee.name, *employee.aliases):
+                        residue = residue.replace(name, "")
+                if WORKLIKE.search(residue):
+                    warnings.append(f"第{line_number}行需人工核对：疑似记工内容无法解析")
     finish_pending()
     return ParseResult(tuple(records), tuple(warnings))
