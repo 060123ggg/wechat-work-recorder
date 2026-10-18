@@ -4,13 +4,13 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from PIL import Image
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QInputDialog)
 from .models import WorkKind, WorkRecord
 from .ocr import TesseractOcr
-from .parser import parse_messages
+from .parser import parse_messages, record_key
 from .payroll import calculate_amount
 from .settings import directory_from_settings, load_settings, save_settings
 from .workbook import write_mock_workbook
@@ -24,6 +24,8 @@ class MainWindow(QMainWindow):
         self.ocr = ocr or TesseractOcr()
         self.employees, self.groups = load_settings()
         self.unresolved_warnings = []
+        self.saved_record_keys: set[tuple] = set()
+        self.needs_parse = False
         self.setWindowTitle("微信记工助手")
         self.resize(1050, 720)
         panel = QWidget()
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.save_button)
         layout.addLayout(controls)
         self.output = QPlainTextEdit()
+        self.output.textChanged.connect(self.on_text_changed)
         self.output.setPlaceholderText("在此粘贴聊天文字，或粘贴截图自动 OCR……")
         layout.addWidget(self.output)
         self.table = QTableWidget(0, len(HEADERS))
@@ -56,8 +59,19 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
         self.setCentralWidget(panel)
-        self.paste_shortcut = QShortcut(QKeySequence.Paste, self)
-        self.paste_shortcut.activated.connect(self.paste_image)
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_V
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                and QApplication.activeWindow() is self
+                and not QApplication.clipboard().image().isNull()):
+            self.paste_image()
+            return True
+        return super().eventFilter(watched, event)
+
+    def on_text_changed(self):
+        self.needs_parse = True
 
     def edit_settings(self):
         names, ok = QInputDialog.getMultiLineText(self, "员工姓名", "每行一名员工，最多17名：", "\n".join(self.employees))
@@ -89,6 +103,9 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage("剪贴板中没有图片", 5000)
             return
+        self.output.clear()
+        self.table.setRowCount(0)
+        self.unresolved_warnings = []
         image = image.convertToFormat(image.Format.Format_RGBA8888)
         pil_image = Image.frombytes("RGBA", (image.width(), image.height()), bytes(image.constBits()))
         try:
@@ -106,6 +123,7 @@ class MainWindow(QMainWindow):
             self.group_combo.setCurrentText(detected_groups[0])
         result = parse_messages(self.output.toPlainText(), directory_from_settings(self.employees, self.groups), self.group_combo.currentText())
         self.unresolved_warnings = list(result.warnings)
+        self.needs_parse = False
         self.table.setRowCount(0)
         for record in result.records:
             self.add_record(record)
@@ -169,11 +187,16 @@ class MainWindow(QMainWindow):
 
     def save_mock(self):
         try:
+            if self.needs_parse:
+                raise ValueError("OCR 原文已修改，请重新解析后核对表格")
             if self.unresolved_warnings:
                 raise ValueError("仍有未解析行；请修改 OCR 原文并重新解析，或核对后在原文中移除无关行")
             records = self.reviewed_records()
             if not records:
                 raise ValueError("没有可保存的记录")
+            keys = [record_key(record) for record in records]
+            if len(keys) != len(set(keys)) or any(key in self.saved_record_keys for key in keys):
+                raise ValueError("存在重复记录或本次运行中已保存的记录，请人工核对")
         except (ValueError, InvalidOperation) as exc:
             QMessageBox.warning(self, "核对失败", str(exc))
             return
@@ -185,6 +208,7 @@ class MainWindow(QMainWindow):
             return
         try:
             write_mock_workbook(Path(filename), records, confirmed=True)
+            self.saved_record_keys.update(record_key(record) for record in records)
             self.statusBar().showMessage(f"已保存模拟账本：{filename}", 10000)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "保存失败", str(exc))

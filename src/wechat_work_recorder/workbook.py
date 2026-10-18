@@ -45,9 +45,10 @@ def write_mock_workbook(destination: Path, records: Sequence[WorkRecord], confir
     for row in rows:
         ws.append([row[key] for key in headers])
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("xb") as output:
-        try:
+    output = destination.open("xb")
+    try:
+        with output:
             wb.save(output)
-        except Exception:
-            destination.unlink(missing_ok=True)
-            raise
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
