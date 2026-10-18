@@ -16,6 +16,9 @@ test = ["pytest>=8,<10"]
 [project.scripts]
 wechat-work-recorder = "wechat_work_recorder.app:main"
 
+[tool.setuptools.package-data]
+wechat_work_recorder = ["historical_items.csv"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
