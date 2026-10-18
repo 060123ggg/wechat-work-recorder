@@ -22,6 +22,8 @@ Windows 桌面软件原型。用 PySide6 接收微信群聊天截图，通过本
 
 ## 开发和测试
 
+每次任务从最新 `origin/main` 创建独立分支，修改后通过 PR 提交，并在 `docs/handoff/` 附一份简短交接文档；由项目负责人确认后再合并。交接模板见 [docs/handoff/TEMPLATE.md](docs/handoff/TEMPLATE.md)，测试结果须区分实际通过、未运行和需要 Windows 人工验证。交接文档不得包含员工隐私或真实工资明细。
+
 ```powershell
 py -m venv .venv
 .venv\Scripts\python.exe -m pip install -e '.[test]'
