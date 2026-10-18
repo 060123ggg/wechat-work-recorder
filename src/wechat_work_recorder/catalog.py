@@ -54,6 +54,19 @@ class ItemCatalog:
         self.additions.add(code)
         self.save()
 
+    def rename_added_code(self, old: str, new: str) -> None:
+        """只能更正本机新增货号；历史原始记录保持不变。"""
+        old, new = normalize_code(old), normalize_code(new)
+        if old not in self.additions or old in self.historical:
+            raise ValueError('只能修改本机新增、非历史货号')
+        if new in self.codes or not re.fullmatch(r'\d{4}(?:-\d)?', new):
+            raise ValueError('新货号无效或已存在')
+        self.additions.remove(old)
+        self.additions.add(new)
+        if old in self.defaults:
+            self.defaults[new] = self.defaults.pop(old)
+        self.save()
+
     def set_default(self, code: str, price: Decimal) -> None:
         code = normalize_code(code)
         if code not in self.codes or price < 0:

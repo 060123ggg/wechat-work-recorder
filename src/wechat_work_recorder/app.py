@@ -144,6 +144,27 @@ class MainWindow(QMainWindow):
         self.needs_parse = True
 
     def manage_catalog(self):
+        action, ok = QInputDialog.getItem(self, "管理货号", "选择操作：",
+                                         ["新增货号/维护现行价", "更正本机新增货号"], 0, False)
+        if not ok:
+            return
+        if action == "更正本机新增货号":
+            if not self.catalog.additions:
+                QMessageBox.information(self, "管理货号", "本机尚无新增货号")
+                return
+            old, ok = QInputDialog.getItem(self, "更正货号", "选择本机新增货号：",
+                                           sorted(self.catalog.additions), 0, False)
+            if not ok:
+                return
+            new, ok = QInputDialog.getText(self, "更正货号", "输入新的完整货号：")
+            if ok:
+                try:
+                    self.catalog.rename_added_code(old, new)
+                    self.needs_parse = True
+                    self.statusBar().showMessage("货号已更正，请重新解析")
+                except ValueError as exc:
+                    QMessageBox.warning(self, "货号设置无效", str(exc))
+            return
         code, ok = QInputDialog.getText(self, "管理货号", "输入完整货号：")
         if not ok or not code.strip():
             return

@@ -62,7 +62,9 @@ def test_local_catalog_add_and_update(tmp_path):
     catalog = ItemCatalog(path)
     catalog.add_code('8513—7')
     catalog.set_default('8513-7', Decimal('1.80'))
+    catalog.rename_added_code('8513-7', '8513-8')
     reopened = ItemCatalog(path)
-    assert reopened.default_price('8513-7') == Decimal('1.80')
+    assert reopened.default_price('8513-8') == Decimal('1.80')
+    assert reopened.default_price('8513-7') is None
     assert normalize_code('8513一7') == '8513-7'
     assert not ItemCatalog(tmp_path / 'other.json').default_price('8513-7')
