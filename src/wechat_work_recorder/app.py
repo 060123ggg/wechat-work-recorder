@@ -56,8 +56,11 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(HEADERS)
         self.table.itemChanged.connect(self.update_amount)
+        self.table.itemChanged.connect(self.refresh_total)
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
+        self.total_label = QLabel("总计：0.00元")
+        layout.addWidget(self.total_label)
         self.setCentralWidget(panel)
         QApplication.instance().installEventFilter(self)
 
@@ -105,6 +108,7 @@ class MainWindow(QMainWindow):
             return
         self.output.clear()
         self.table.setRowCount(0)
+        self.refresh_total()
         self.unresolved_warnings = []
         image = image.convertToFormat(image.Format.Format_RGBA8888)
         pil_image = Image.frombytes("RGBA", (image.width(), image.height()), bytes(image.constBits()))
@@ -127,6 +131,7 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(0)
         for record in result.records:
             self.add_record(record)
+        self.refresh_total()
         msg = f"识别 {len(result.records)} 条；需人工核对 {len(result.warnings)} 行"
         self.statusBar().showMessage(msg)
         if result.warnings:
@@ -166,6 +171,14 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(True)
         self.table.setItem(row, 8, QTableWidgetItem(amount))
         self.table.blockSignals(False)
+
+    def refresh_total(self, *_):
+        try:
+            amounts = [Decimal(self.table.item(row, 8).text()) for row in range(self.table.rowCount())]
+            total = sum(amounts, Decimal("0"))
+            self.total_label.setText(f"总计：{total:.2f}元")
+        except (AttributeError, InvalidOperation):
+            self.total_label.setText("总计：请核对未完成的记录")
 
     def reviewed_records(self) -> list[WorkRecord]:
         records = []
