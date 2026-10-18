@@ -3,6 +3,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 from wechat_work_recorder import app as app_module
 from wechat_work_recorder.models import Employee
+from wechat_work_recorder.review_dialog import ReviewDialog
 
 
 def window_with_binding(monkeypatch, tmp_path):
@@ -23,6 +24,7 @@ def test_ambiguous_line_is_visible_and_blocks_save(monkeypatch, tmp_path):
     monkeypatch.setattr(QMessageBox, 'warning', lambda *args: messages.append(args[-1]))
     window.output.setPlainText('2026/10/9\n测试昵称\n8513-70*1.7\n计时3.5')
     window.parse_text()
+    window.review_list.setCurrentRow(0)
     assert window.table.rowCount() == 1
     assert '8513-70*1.7' in window.review_notes.toPlainText()
     assert '单价候选：1.7' in window.review_notes.toPlainText()
@@ -36,10 +38,13 @@ def test_review_choice_reparses_and_recalculates(monkeypatch, tmp_path):
     monkeypatch.setattr(QMessageBox, 'warning', lambda *args: None)
     window.output.setPlainText('2026/10/9\n测试昵称\n8513-70*1.7\n计时3.5')
     window.parse_text()
-    selections = iter([0, 1])
-    monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: (args[3][next(selections)], True))
-    entries = iter([('70', True), ('1.7', True)])
-    monkeypatch.setattr(QInputDialog, 'getText', lambda *args, **kwargs: next(entries))
+    window.review_list.setCurrentRow(0)
+    def review(dialog):
+        dialog.code.setCurrentText('8513')
+        dialog.quantity.setText('70')
+        dialog.price.setText('1.7')
+        dialog.confirm()
+    monkeypatch.setattr(ReviewDialog, 'exec', review)
     window.review_ambiguous_line()
     assert not window.unresolved_warnings
     assert window.table.rowCount() == 2

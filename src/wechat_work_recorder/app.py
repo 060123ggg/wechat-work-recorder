@@ -22,8 +22,9 @@ from .wechat_text import nickname_candidates
 from .message_view import split_messages, message_for_line
 from .employees import EmployeeDirectory
 from .ocr import TesseractOcr
-from .parser import parse_messages, record_key
+from .parser import DATE, parse_messages, record_key
 from .payroll import calculate_amount
+from .review_dialog import ReviewDialog
 from .settings import directory_from_settings, load_settings, save_settings
 from .workbook import write_mock_workbook
 
@@ -103,7 +104,7 @@ class MainWindow(QMainWindow):
         self.message_list.itemClicked.connect(self.select_message_item)
         layout.addWidget(self.message_list)
         layout.addWidget(self.output)
-        layout.addWidget(QLabel("待核对原文及历史货号候选："))
+        layout.addWidget(QLabel("待核对原文与货号候选："))
         self.review_list = QListWidget()
         self.review_list.setMaximumHeight(105)
         self.review_list.itemClicked.connect(self.select_review_item)
@@ -259,16 +260,14 @@ class MainWindow(QMainWindow):
             entry = self.warning_entries[self.review_list.row(selected_item)]
             selected = entry[0]
         else:
-            choices = [warning for warning in self.unresolved_warnings if '；原文：' in warning and '历史货号候选：' in warning]
+            choices = [warning for warning in self.unresolved_warnings if '；原文：' in warning]
             if not choices:
-                QMessageBox.information(self, '待核对内容', '当前没有可手工确认货号的疑似计件行')
+                QMessageBox.information(self, '待核对内容', '当前没有可人工审核的记工行')
                 return
-            selected, ok = QInputDialog.getItem(self, '选择待核对行', '原文与候选：', choices, 0, False)
-            if not ok:
-                return
+            selected = choices[0]
         line_match = re.match(r'第(\d+)行', selected)
-        if not line_match or '历史货号候选：' not in selected:
-            QMessageBox.warning(self, '无法核对', '该项目不是可确认的计件行；请先处理员工身份、日期或其他问题')
+        if not line_match or '；原文：' not in selected:
+            QMessageBox.warning(self, '无法核对', '该项目没有可定位的原文行')
             return
         line_number = int(line_match.group(1))
         source_lines = self.output.toPlainText().splitlines()
@@ -277,50 +276,55 @@ class MainWindow(QMainWindow):
             return
         original = source_lines[line_number - 1]
         candidates = self.catalog.candidates(original)
-        if not candidates:
-            QMessageBox.warning(self, '无法核对', '历史库没有合适货号；请先通过「管理货号与默认价」添加已确认的完整货号')
-            return
-        code, ok = QInputDialog.getItem(self, '选择完整货号', '历史候选（请核对完整货号）：',
-                                        ['请选择…', *candidates], 0, False)
-        if not ok or code == '请选择…':
-            return
-        quantity, ok = QInputDialog.getText(self, '确认数量', f'原文：{original}\n请填确认后的数量：')
-        if not ok:
-            return
-        price, ok = QInputDialog.getText(self, '确认单价',
-            f'原文：{original}\n历史参考：{self.catalog.historical_prices(code)}\n请填确认后的单价：',
-            text=str(self.catalog.default_price(code) or ''))
-        if not ok:
-            return
-        try:
-            if not re.fullmatch(r'\d+(?:\.\d+)?', quantity) or not re.fullmatch(r'\d+(?:\.\d+)?', price):
-                raise ValueError('数量和单价须为非负数字')
-            if Decimal(quantity) <= 0 or Decimal(price) < 0:
-                raise ValueError('数量须大于零，单价不能小于零')
-            if not self.group_combo.currentText():
-                raise ValueError('请先选择微信群')
-            corrected = list(source_lines)
-            corrected[line_number - 1] = f'{code} {quantity}*{price}'
-            group = self.group_combo.currentText()
-            directory = self.resolved_directory(group)
-            trial = parse_messages('\n'.join(corrected), directory, group,
-                sender_hints=set(nickname_candidates(self.output.toPlainText(), self.groups)))
-            matches = [record for record in trial.records if record.source_line == line_number
-                       and record.item_code == code and record.quantity == Decimal(quantity)
-                       and record.unit_price == Decimal(price)]
-            if len(matches) != 1:
-                reasons = [warning for warning in trial.warnings if warning.startswith(f'第{line_number}行')]
-                raise ValueError('确认后的记录未能唯一生成：' + ('；'.join(reasons) or '请检查员工、日期或重复记录'))
-            record = replace(matches[0], source_text=original,
-                             message_number=message_for_line(self.message_blocks, line_number))
+        group = self.group_combo.currentText()
+        block = next((b for b in self.message_blocks if b.start_line <= line_number <= b.end_line), None)
+        nickname = block.nickname if block else None
+        employee_id = self.bindings.resolve(group, nickname) if group and nickname else None
+        employee = self.employee_by_id.get(employee_id) if employee_id else None
+        dates = list(DATE.finditer('\n'.join(source_lines[:line_number])))
+        work_date = None
+        if dates:
+            last = dates[-1]
+            try:
+                work_date = date(int(last['year']), int(last['month']), int(last['day']))
+            except ValueError:
+                pass
+
+        def confirm(values):
+            kind, code, quantity, price, hours, note = values
+            if re.search(r'\d+(?:\.\d+)?\s*[＊*×✘xX]\s*\d', original) and re.search(r'计时|工时|计\s*\d|\d+(?:\.\d+)?\s*小时', original):
+                return '原文同一行包含计件和计时；请先拆成两行再解析，避免漏记'
+            if not group:
+                return '请先选择微信群'
+            if employee is None:
+                return '员工未绑定；请先确认微信昵称与正式员工的绑定'
+            if work_date is None:
+                return '缺少有效工作日期'
+            if kind == WorkKind.PIECE and not (re.fullmatch(r'\d{4}(?:-\d)?', code) or code.strip()):
+                return '请确认完整货号或工作项目'
+            record = WorkRecord(employee.employee_id, work_date, kind, group, original,
+                item_code=code if kind == WorkKind.PIECE else None,
+                quantity=Decimal(quantity) if quantity else None,
+                unit_price=Decimal(price) if price else None,
+                hours=Decimal(hours) if hours else None, note=note or None,
+                source_line=line_number, message_number=message_for_line(self.message_blocks, line_number))
+            if any(record_key(other) == record_key(record) for other in self.reviewed_records()):
+                return '疑似重复记录，请核对已有工资明细'
             self.review_overrides[line_number] = (original, group, record)
             self.parse_text()
             if any(warning.startswith(f'第{line_number}行') for warning in self.unresolved_warnings):
                 self.review_overrides.pop(line_number, None)
                 self.parse_text()
-                raise ValueError('本行仍需核对，人工确认未生效')
-        except (ValueError, InvalidOperation) as exc:
-            QMessageBox.warning(self, '审核失败', str(exc))
+                return '本行仍需核对，人工确认未生效'
+            return None
+
+        dialog = ReviewDialog(original, message_for_line(self.message_blocks, line_number),
+                              employee.name if employee else None,
+                              work_date.strftime('%Y/%m/%d') if work_date else None,
+                              candidates, confirm, self,
+                              {code: self.catalog.default_price(code) for code in candidates
+                               if self.catalog.default_price(code) is not None})
+        dialog.exec()
 
     def import_clipboard_text(self):
         if not self.ensure_roster():
@@ -411,7 +415,7 @@ class MainWindow(QMainWindow):
                 self.review_overrides.pop(line, None)
                 continue
             warnings = [warning for warning in warnings
-                        if not (warning.startswith(f'第{line}行') and '历史货号候选：' in warning)]
+                        if not (warning.startswith(f'第{line}行') and '；原文：' in warning)]
             if any(record_key(other) == record_key(record) for other in records):
                 warnings.append(f'第{line}行需人工核对：人工确认记录与其他记录重复；原文：{original}')
             else:
