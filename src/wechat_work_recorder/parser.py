@@ -78,8 +78,10 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
         body = " ".join(pending)
         original_body = " ".join(pending_original)
         try:
-            if pending_date is None or pending_employee is None:
-                raise ValueError("缺少完整日期或唯一员工")
+            if pending_date is None:
+                raise ValueError("缺少有效工作日期")
+            if pending_employee is None:
+                raise ValueError("员工未绑定或未确认")
             if pending_kind == WorkKind.PIECE:
                 if len(re.findall(r"\d+(?:\.\d+)?\s*[＊*×✘xX]\s*\d+(?:\.\d+)?", body)) > 1:
                     raise ValueError("多条疑似计件内容混在一起")
@@ -143,7 +145,10 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
             seen.add(key)
             records.append(record)
         except (ValueError, InvalidOperation) as exc:
-            warnings.append(f"第{pending_line}行需人工核对：{exc}；原文：{original_body}；{catalog.review_candidates(body)}")
+            if pending_employee is None:
+                warnings.append(f"第{pending_line}行需人工核对：员工未绑定或未确认；原文：{original_body}")
+            else:
+                warnings.append(f"第{pending_line}行需人工核对：{exc}；原文：{original_body}；{catalog.review_candidates(body)}")
         pending = []
         pending_original = []
         pending_kind = None
@@ -215,7 +220,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     warnings.append(f"第{line_number}行需人工核对：员工不唯一")
             elif unknown_sender:
                 current_employee = None
-                warnings.append(f"第{line_number}行需人工核对：微信昵称尚未确认")
+                warnings.append(f"第{line_number}行需人工核对：员工未绑定（微信昵称尚未确认）")
             if new_kind is not None:
                 pending = [line]
                 pending_original = [original_line]

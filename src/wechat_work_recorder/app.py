@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout
 from .models import Employee, WorkKind, WorkRecord
 from .bindings import BindingConflict, NicknameBindingStore
 from .binding_dialog import BindingDialog
-from .roster import load_builtin_roster
+from .roster import load_builtin_roster, save_private_roster
+from .roster_dialog import RosterDialog
 from .wechat_text import nickname_candidates
 from .employees import EmployeeDirectory
 from .ocr import TesseractOcr
@@ -29,8 +30,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ocr = ocr or TesseractOcr()
         self.employees, self.groups = load_settings()
-        self.roster = load_builtin_roster()
         self.bindings = NicknameBindingStore()
+        self.roster = load_builtin_roster() or self.bindings.employees()
+        if self.roster and len(self.roster) != 17:
+            self.roster = []
         if self.roster:
             self.bindings.install_roster(self.roster)
             self.employees = [employee.name for employee in self.roster]
@@ -44,30 +47,37 @@ class MainWindow(QMainWindow):
         self.resize(1050, 720)
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("先设置微信群；复制聊天文字后点导入，或选群后 Ctrl+V 粘贴截图。确认后仅能保存新模拟账本。"))
+        self.guide_label = QLabel()
+        layout.addWidget(self.guide_label)
+        self.update_guide()
         controls = QHBoxLayout()
         self.settings_button = QPushButton("设置员工和群")
         self.settings_button.clicked.connect(self.edit_settings)
         controls.addWidget(self.settings_button)
+        self.roster_button = QPushButton("管理正式员工名册")
+        self.roster_button.clicked.connect(self.manage_roster)
+        controls.addWidget(self.roster_button)
         self.bindings_button = QPushButton("管理昵称绑定")
         self.bindings_button.clicked.connect(self.manage_bindings)
         controls.addWidget(self.bindings_button)
         self.catalog_button = QPushButton("管理货号与默认价")
         self.catalog_button.clicked.connect(self.manage_catalog)
         controls.addWidget(self.catalog_button)
-        self.review_button = QPushButton("核对疑似记工行")
-        self.review_button.clicked.connect(self.review_ambiguous_line)
-        controls.addWidget(self.review_button)
-        self.import_button = QPushButton("导入微信复制文字")
-        self.import_button.clicked.connect(self.import_clipboard_text)
-        controls.addWidget(self.import_button)
         self.group_combo = QComboBox()
         self.group_combo.addItems(self.groups)
         controls.addWidget(QLabel("当前微信群："))
         controls.addWidget(self.group_combo)
+        layout.addLayout(controls)
+        controls = QHBoxLayout()
+        self.import_button = QPushButton("导入微信复制文字")
+        self.import_button.clicked.connect(self.import_clipboard_text)
+        controls.addWidget(self.import_button)
         self.parse_button = QPushButton("解析文字")
         self.parse_button.clicked.connect(self.parse_text)
         controls.addWidget(self.parse_button)
+        self.review_button = QPushButton("核对疑似记工行")
+        self.review_button.clicked.connect(self.review_ambiguous_line)
+        controls.addWidget(self.review_button)
         self.add_button = QPushButton("手工添加记录")
         self.add_button.clicked.connect(self.add_empty_record)
         controls.addWidget(self.add_button)
@@ -112,6 +122,42 @@ class MainWindow(QMainWindow):
     def on_text_changed(self):
         self.needs_parse = True
 
+    def update_guide(self):
+        if self.roster:
+            self.guide_label.setText('先设置微信群；复制聊天文字后点导入，或选群后 Ctrl+V 粘贴截图。确认后仅能保存新模拟账本。')
+        else:
+            self.guide_label.setText('首次使用：点击「管理正式员工名册」，核对预填的17名员工姓名和工号并保存到本机；再设置微信群、绑定微信昵称。')
+
+    def manage_roster(self) -> bool:
+        existing = self.roster or self.bindings.employees()
+        dialog = RosterDialog(existing, self.employees, self)
+        if dialog.exec() != RosterDialog.DialogCode.Accepted:
+            return False
+        employees = dialog.employees()
+        try:
+            self.bindings.update_roster(employees)
+            save_private_roster(employees)
+            save_settings([employee.name for employee in employees], self.groups)
+        except (BindingConflict, ValueError, OSError) as exc:
+            QMessageBox.warning(self, '名册保存失败', str(exc))
+            return False
+        self.roster = employees
+        self.employees = [employee.name for employee in employees]
+        self.employee_by_id = {employee.employee_id: employee for employee in employees}
+        self.table.setRowCount(0)
+        self.unresolved_warnings = []
+        self.needs_parse = True
+        self.update_guide()
+        self.statusBar().showMessage('17名正式员工已保存到本机；请核对微信群和昵称绑定')
+        return True
+
+    def ensure_roster(self) -> bool:
+        if self.roster:
+            return True
+        answer = QMessageBox.question(self, '首次设置正式员工',
+            '已有员工姓名会自动预填。请在软件中核对17名员工的正式工号和姓名，保存到本机后再导入。现在设置吗？')
+        return answer == QMessageBox.StandardButton.Yes and self.manage_roster()
+
     def edit_settings(self):
         if self.roster:
             names = "\n".join(self.employees)
@@ -136,8 +182,7 @@ class MainWindow(QMainWindow):
         self.unresolved_warnings = []
 
     def manage_bindings(self):
-        if not self.roster:
-            QMessageBox.warning(self, "缺少正式名册", "尚未内置17名员工的正式工号和姓名，不能建立可信绑定")
+        if not self.ensure_roster():
             return
         BindingDialog(self.bindings, self.groups, self).exec()
         self.table.setRowCount(0)
@@ -222,8 +267,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "核对无效", str(exc))
 
     def import_clipboard_text(self):
-        if not self.roster:
-            QMessageBox.warning(self, "缺少正式名册", "尚未内置17名员工的正式工号和姓名，不能确认微信文字中的员工")
+        if not self.ensure_roster():
             return
         copied = QApplication.clipboard().text().strip()
         if not copied:
@@ -248,7 +292,7 @@ class MainWindow(QMainWindow):
             options = ["请选择员工…"] + [f"{employee.employee_id}  {employee.name}" for employee in self.roster]
             choice, ok = QInputDialog.getItem(self, "确认微信昵称", f"“{nickname}”在“{group}”中尚未绑定。请选择员工：", options, 0, False)
             if not ok or not choice or choice == options[0]:
-                warnings.append(f"昵称“{nickname}”未确认员工，禁止保存")
+                warnings.append(f"员工未绑定：微信昵称“{nickname}”在“{group}”中尚未确认，禁止保存")
                 continue
             employee_id = self.roster[options.index(choice) - 1].employee_id
             try:
@@ -280,6 +324,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"OCR 失败：{exc}")
 
     def parse_text(self):
+        if not self.ensure_roster():
+            self.table.setRowCount(0)
+            self.unresolved_warnings = ['员工未绑定：请先在「管理正式员工名册」中完成首次设置']
+            self.review_notes.setPlainText('\n'.join(self.unresolved_warnings))
+            self.refresh_total()
+            return
         if not self.employees or not self.groups:
             QMessageBox.warning(self, "缺少设置", "请先配置员工和微信群")
             return

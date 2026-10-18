@@ -1,5 +1,6 @@
 """按微信群保存已确认的微信昵称与稳定工号。"""
 import sqlite3
+from uuid import uuid4
 from pathlib import Path
 from .models import Employee
 from .settings import settings_path
@@ -46,6 +47,28 @@ class NicknameBindingStore:
     def employees(self) -> list[Employee]:
         return [Employee(employee_id, name) for employee_id, name in
                 self.connection.execute("SELECT employee_id, name FROM employees ORDER BY employee_id")]
+
+    def update_roster(self, employees: list[Employee]) -> None:
+        """界面明确保存名册时更新；已有昵称绑定必须保持原工号。"""
+        from .roster import validate_roster
+        validate_roster(employees)
+        incoming = {e.employee_id: e.name for e in employees}
+        with self.connection:
+            has_bindings = self.connection.execute("SELECT 1 FROM nickname_bindings LIMIT 1").fetchone()
+            existing = {e.employee_id for e in self.employees()}
+            if has_bindings and existing != set(incoming):
+                raise BindingConflict('已有昵称绑定；请保留现有工号，仅修改姓名，避免绑定错位')
+            if has_bindings:
+                marker = uuid4().hex
+                for employee_id in incoming:
+                    self.connection.execute('UPDATE employees SET name=? WHERE employee_id=?',
+                                            (f'__updating_{marker}_{employee_id}', employee_id))
+                for employee_id, name in incoming.items():
+                    self.connection.execute('UPDATE employees SET name=? WHERE employee_id=?',
+                                            (name, employee_id))
+            else:
+                self.connection.execute('DELETE FROM employees')
+                self.connection.executemany('INSERT INTO employees(employee_id, name) VALUES (?, ?)', incoming.items())
 
     def resolve(self, group_id: str, nickname: str) -> str | None:
         row = self.connection.execute("SELECT employee_id FROM nickname_bindings WHERE group_id=? AND nickname=?",
