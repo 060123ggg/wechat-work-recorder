@@ -34,3 +34,4 @@ class WorkRecord:
 class ParseResult:
     records: tuple[WorkRecord, ...]
     warnings: tuple[str, ...]
+    price_warnings: tuple[str, ...] = ()

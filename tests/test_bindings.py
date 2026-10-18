@@ -13,11 +13,11 @@ def test_bindings_persist_and_allow_many_nicknames(tmp_path):
     store = NicknameBindingStore(path)
     store.install_roster(roster())
     store.bind("一群", "小雪", "E01")
-    store.bind("一群", "雪琴", "E01")
+    store.bind("一群", "测试员工", "E01")
     store.close()
     reopened = NicknameBindingStore(path)
     assert reopened.resolve("一群", "小雪") == "E01"
-    assert reopened.resolve("一群", "雪琴") == "E01"
+    assert reopened.resolve("一群", "测试员工") == "E01"
     assert len(reopened.list_bindings()) == 2
     reopened.unbind("一群", "小雪")
     assert reopened.resolve("一群", "小雪") is None
@@ -49,9 +49,9 @@ def test_roster_change_cannot_silently_reassign_existing_bindings(tmp_path):
 
 
 def test_nickname_candidates_from_batch_copy():
-    text = "2026/10/9 09:30 雪琴\n8513-7 70*1.7\n计时3.5\n小李：\n8510-1 20*2"
-    assert nickname_candidates(text, ["一群"]) == ["雪琴", "小李"]
-    assert nickname_candidates("2026/10/9\n雪琴\n8513-7 70*1.7", ["一群"]) == ["雪琴"]
+    text = "2026/10/9 09:30 测试员工\n8513-7 70*1.7\n计时3.5\n小李：\n8510-1 20*2"
+    assert nickname_candidates(text, ["一群"]) == ["测试员工", "小李"]
+    assert nickname_candidates("2026/10/9\n测试员工\n8513-7 70*1.7", ["一群"]) == ["测试员工"]
 
 
 def test_replace_binding_is_atomic_on_conflict(tmp_path):

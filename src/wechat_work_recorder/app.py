@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from PIL import Image
+from .catalog import ItemCatalog, normalize_code
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget,
@@ -35,6 +36,8 @@ class MainWindow(QMainWindow):
             self.employees = [employee.name for employee in self.roster]
         self.employee_by_id = {employee.employee_id: employee for employee in self.roster}
         self.unresolved_warnings = []
+        self.price_warnings = []
+        self.catalog = ItemCatalog()
         self.saved_record_keys: set[tuple] = set()
         self.needs_parse = False
         self.setWindowTitle("微信记工助手")
@@ -49,6 +52,12 @@ class MainWindow(QMainWindow):
         self.bindings_button = QPushButton("管理昵称绑定")
         self.bindings_button.clicked.connect(self.manage_bindings)
         controls.addWidget(self.bindings_button)
+        self.catalog_button = QPushButton("管理货号与默认价")
+        self.catalog_button.clicked.connect(self.manage_catalog)
+        controls.addWidget(self.catalog_button)
+        self.review_button = QPushButton("核对疑似记工行")
+        self.review_button.clicked.connect(self.review_ambiguous_line)
+        controls.addWidget(self.review_button)
         self.import_button = QPushButton("导入微信复制文字")
         self.import_button.clicked.connect(self.import_clipboard_text)
         controls.addWidget(self.import_button)
@@ -70,6 +79,11 @@ class MainWindow(QMainWindow):
         self.output.textChanged.connect(self.on_text_changed)
         self.output.setPlaceholderText("在此粘贴聊天文字，或粘贴截图自动 OCR……")
         layout.addWidget(self.output)
+        layout.addWidget(QLabel("待核对原文及历史货号候选："))
+        self.review_notes = QPlainTextEdit()
+        self.review_notes.setReadOnly(True)
+        self.review_notes.setMaximumHeight(100)
+        layout.addWidget(self.review_notes)
         self.table = QTableWidget(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(HEADERS)
         self.table.itemChanged.connect(self.update_amount)
@@ -128,6 +142,84 @@ class MainWindow(QMainWindow):
         BindingDialog(self.bindings, self.groups, self).exec()
         self.table.setRowCount(0)
         self.needs_parse = True
+
+    def manage_catalog(self):
+        action, ok = QInputDialog.getItem(self, "管理货号", "选择操作：",
+                                         ["新增货号/维护现行价", "更正本机新增货号"], 0, False)
+        if not ok:
+            return
+        if action == "更正本机新增货号":
+            if not self.catalog.additions:
+                QMessageBox.information(self, "管理货号", "本机尚无新增货号")
+                return
+            old, ok = QInputDialog.getItem(self, "更正货号", "选择本机新增货号：",
+                                           sorted(self.catalog.additions), 0, False)
+            if not ok:
+                return
+            new, ok = QInputDialog.getText(self, "更正货号", "输入新的完整货号：")
+            if ok:
+                try:
+                    self.catalog.rename_added_code(old, new)
+                    self.needs_parse = True
+                    self.statusBar().showMessage("货号已更正，请重新解析")
+                except ValueError as exc:
+                    QMessageBox.warning(self, "货号设置无效", str(exc))
+            return
+        code, ok = QInputDialog.getText(self, "管理货号", "输入完整货号：")
+        if not ok or not code.strip():
+            return
+        try:
+            code = normalize_code(code)
+            if code not in self.catalog.codes:
+                self.catalog.add_code(code)
+            historical = self.catalog.historical_prices(code) or "无历史价格"
+            current = self.catalog.default_price(code)
+            price, ok = QInputDialog.getText(self, "已确认现行价",
+                f"{code}；历史参考：{historical}\n现行默认价（留空仅保存货号）：",
+                str(current) if current is not None else "")
+            if ok and price.strip():
+                self.catalog.set_default(code, Decimal(price.strip()))
+            self.needs_parse = True
+            self.statusBar().showMessage(f"货号 {code} 已保存到本机；请重新解析")
+        except (ValueError, InvalidOperation) as exc:
+            QMessageBox.warning(self, "货号设置无效", str(exc))
+
+    def review_ambiguous_line(self):
+        import re
+        lines = [warning for warning in self.unresolved_warnings if "；原文：" in warning]
+        if not lines:
+            QMessageBox.information(self, "待核对内容", "当前没有可修改的疑似记工行")
+            return
+        selected, ok = QInputDialog.getItem(self, "选择待核对行", "原文与候选：", lines, 0, False)
+        if not ok:
+            return
+        original = selected.split("；原文：", 1)[1].split("；历史货号候选：", 1)[0]
+        candidates = self.catalog.candidates(original)
+        code, ok = QInputDialog.getItem(self, "选择完整货号", "历史候选（没有合适选项时请先管理货号）：",
+                                        ["请选择…", *candidates], 0, False)
+        if not ok or code == "请选择…":
+            return
+        quantity, ok = QInputDialog.getText(self, "确认数量", f"原文：{original}\n请填确认后的数量：")
+        if not ok:
+            return
+        price, ok = QInputDialog.getText(self, "确认单价", f"原文：{original}\n历史参考：{self.catalog.historical_prices(code)}\n请填确认后的现行单价：",
+                                         str(self.catalog.default_price(code) or ""))
+        if not ok:
+            return
+        try:
+            if Decimal(quantity) <= 0 or Decimal(price) < 0:
+                raise ValueError("数量须大于零，单价不能小于零")
+            if not re.fullmatch(r"\d+(?:\.\d+)?", quantity) or not re.fullmatch(r"\d+(?:\.\d+)?", price):
+                raise ValueError("数量和单价须为数字")
+            source = self.output.toPlainText()
+            source_line = next((line for line in source.splitlines()
+                                if normalize_code(line.strip()) == normalize_code(original)), None)
+            if source_line is None:
+                raise ValueError("原文已经改变，请先重新解析")
+            self.output.setPlainText(source.replace(source_line, f"{code} {quantity}*{price}", 1))
+            self.parse_text()
+        except (ValueError, InvalidOperation) as exc:
+            QMessageBox.warning(self, "核对无效", str(exc))
 
     def import_clipboard_text(self):
         if not self.roster:
@@ -200,12 +292,14 @@ class MainWindow(QMainWindow):
         candidates = set(nickname_candidates(self.output.toPlainText(), self.groups)) if self.roster else None
         result = parse_messages(self.output.toPlainText(), directory, group, sender_hints=candidates)
         self.unresolved_warnings = identity_warnings + list(result.warnings)
+        self.price_warnings = list(result.price_warnings)
+        self.review_notes.setPlainText("\n".join(self.unresolved_warnings + self.price_warnings))
         self.needs_parse = False
         self.table.setRowCount(0)
         for record in result.records:
             self.add_record(record)
         self.refresh_total()
-        msg = f"识别 {len(result.records)} 条；需人工核对 {len(self.unresolved_warnings)} 项"
+        msg = f"识别 {len(result.records)} 条；需人工核对 {len(self.unresolved_warnings) + len(self.price_warnings)} 项"
         self.statusBar().showMessage(msg)
         if self.unresolved_warnings:
             QMessageBox.warning(self, "未解析的内容", "\n".join(self.unresolved_warnings))
@@ -281,6 +375,12 @@ class MainWindow(QMainWindow):
             if self.unresolved_warnings:
                 raise ValueError("仍有未解析行；请修改 OCR 原文并重新解析，或核对后在原文中移除无关行")
             records = self.reviewed_records()
+            for record in records:
+                default = self.catalog.default_price(record.item_code or "")
+                if record.kind == WorkKind.PIECE and default is not None and record.unit_price != default:
+                    detail = f"{record.item_code} 单价{record.unit_price}元，与已确认默认价{default}元不同；按填写价计算"
+                    if detail not in self.price_warnings:
+                        self.price_warnings.append(detail)
             if not records:
                 raise ValueError("没有可保存的记录")
             keys = [record_key(record) for record in records]
@@ -289,7 +389,8 @@ class MainWindow(QMainWindow):
         except (ValueError, InvalidOperation) as exc:
             QMessageBox.warning(self, "核对失败", str(exc))
             return
-        answer = QMessageBox.question(self, "确认记录", f"请确认 {len(records)} 条记录和工资均已核对。只会新建模拟账本，继续吗？")
+        details = "\n".join(self.price_warnings)
+        answer = QMessageBox.question(self, "确认记录", f"请确认 {len(records)} 条记录和工资均已核对。\n{details}\n只会新建模拟账本，继续吗？")
         if answer != QMessageBox.StandardButton.Yes:
             return
         filename, _ = QFileDialog.getSaveFileName(self, "保存新模拟账本", "模拟工资账本.xlsx", "Excel (*.xlsx)")

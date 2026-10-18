@@ -130,10 +130,10 @@ def test_compact_piece_and_time_are_shown_in_window(monkeypatch, tmp_path):
 
     class ReportedMessageOcr:
         def recognize(self, image):
-            return "2026/10/9\n雪琴\n8513-7 70*1.7\n计时3.5"
+            return "2026/10/9\n测试员工\n8513-7 70*1.7\n计时3.5"
 
     window = MainWindow(ocr=ReportedMessageOcr())
-    window.employees = ["雪琴"]
+    window.employees = ["测试员工"]
     window.groups = ["一群"]
     window.group_combo.addItem("一群")
     app.clipboard().setImage(QImage(20, 20, QImage.Format.Format_RGB32))
