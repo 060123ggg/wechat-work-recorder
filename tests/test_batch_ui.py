@@ -171,3 +171,29 @@ def test_unknown_sender_after_known_sender_never_inherits_identity(monkeypatch, 
     assert records[0].item_code == "8513-7"
     assert window.unresolved_warnings
     window.close()
+
+
+def test_screenshot_ocr_uses_confirmed_binding_after_window_restart(monkeypatch, tmp_path):
+    from PySide6.QtGui import QImage
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    app = QApplication.instance() or QApplication([])
+
+    class ScreenshotOcr:
+        def recognize(self, image):
+            return "2026/10/9\n雪琴\n8513-7 70*1.7\n计时3.5"
+
+    first = app_module.MainWindow(ocr=ScreenshotOcr())
+    first.groups = ["一群"]
+    first.group_combo.addItem("一群")
+    first.bindings.bind("一群", "雪琴", "AM-1003")
+    first.close()
+
+    second = app_module.MainWindow(ocr=ScreenshotOcr())
+    second.groups = ["一群"]
+    second.group_combo.addItem("一群")
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (_ for _ in ()).throw(AssertionError("已绑定昵称不应弹窗")))
+    app.clipboard().setImage(QImage(20, 20, QImage.Format.Format_RGB32))
+    second.paste_image()
+    assert [record.employee_id for record in second.reviewed_records()] == ["AM-1003", "AM-1003"]
+    assert second.total_label.text() == "总计：171.50元"
+    second.close()
