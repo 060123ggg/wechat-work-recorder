@@ -1,45 +1,33 @@
 # 微信记工助手
 
-Windows 桌面软件原型。使用 PySide6 接收粘贴的微信群截图，使用本机 Tesseract OCR 识别文字，以规则解析记工信息，按件或按每小时 **15 元**计算工资。第一版不使用 AI 或付费 API。
+Windows 桌面软件原型。用 PySide6 接收微信群聊天截图，通过本机 Tesseract OCR 识别文字，以规则提取记工信息。按件计算数量 × 单价；计时统一按 **15 元/小时**计算。不使用 AI 或付费 API。
 
-## 当前范围
+## Windows 下载、安装、启动
 
-- `Ctrl+V` 粘贴截图并显示 OCR 原文，供人工核对。
-- 业务接口支持最多 17 名员工和 3 个微信群；姓名、别名及群标识须按实际情况配置。当前没有预置真实名单。
-- 解析示例格式：`2026-10-18 张三 货号 AB-123 数量 10 单价 2.5` 或 `2026-10-18 张三 计时 3 小时`。一行一条，缺失或含糊的信息进入警告列表，不自动记账。
-- 工资表模块提供预览和写入副本接口。取得真实 WPS Excel 模板及列映射前，写入会明确拒绝；原始工资表不会被修改。
+1. 在 GitHub 仓库页面选择 **Code → Download ZIP**，解压到一个普通文件夹。也可以用 Git 克隆仓库的开发分支。
+2. 安装 [Python 3.10 或更新版本](https://www.python.org/downloads/windows/)，安装时勾选 `py launcher`。
+3. 安装 Windows 版 Tesseract OCR，勾选或额外安装 `chi_sim` 简体中文语言数据，并将 Tesseract 安装目录加入系统 PATH。安装后重新打开程序。
+4. 双击项目文件夹内的 `start_windows.bat`。首次启动会自动创建 `.venv` 并安装 Python 依赖；需要联网。后续双击同一个文件启动。
 
-当前窗口只完成截图粘贴与 OCR 原文展示。规则解析、人工确认、员工设置和账本映射尚未接入窗口，不能用于正式发薪。
+若 Windows 提示找不到 Tesseract，检查 PATH 是否包含 `tesseract.exe` 所在目录，以及其 `tessdata` 目录下是否有 `chi_sim.traineddata`。一键脚本不负责安装 Python 或 Tesseract。
 
-## Windows 本地运行
+## 使用流程
 
-安装 Python 3.10+、Tesseract OCR 及其 `chi_sim` 中文语言数据；确认 `tesseract` 在 PATH 中。若安装在其他位置，可在代码中向 `TesseractOcr(executable=...)` 传入路径。建议在项目目录运行：
+1. 点击「设置员工和群」，每行填写一名员工（最多17名）和一个群名（最多3个）。配置保存在当前 Windows 用户的 `%APPDATA%\WechatWorkRecorder\settings.json`。同名员工暂不支持，别名尚未接入窗口配置。
+2. 从群聊天复制截图，选中对应群后按 `Ctrl+V`。程序自动调用本地 OCR，并解析能明确识别的行。如果 OCR 文本中只出现一个已配置的群名，会自动选择该群；否则必须人工选择。
+3. 核对 OCR 原文和表格。日期、员工昵称、货号、数量、单价和工时可分布在多行；程序沿用最近明确的日期与员工。可修改原文后点「解析文字」，也可直接编辑表格、用「手工添加记录」补充记录。修改原文后必须重新解析。未解析或疑似重复的记录会阻止保存，需人工核对。
+4. 点击「确认并保存模拟账本」，再次确认后选一个**新的** `.xlsx` 文件名。程序拒绝覆盖现有文件。该文件仅用于测试，不会写入真实工资表。
+
+解析示例：`2026-10-18 张三 货号 AB-123/45 数量 10 单价 2.5` 或 `2026-10-18 张三 计时 3 小时`。支持 `3小时30分`、`3.5小时`、`计时3.5`、`计时3小时半`；不能确认的工时会提示人工核对。同一截图内的完全相同记录会被标记为疑似重复，同一次程序运行中再次保存相同记录会被阻止；跨程序重启的重复导入尚无持久校验。真实微信截图布局多变，仍可能需要人工整理。OCR、群名检测和规则解析均需逐条核对，不能直接用于正式发薪。
+
+## 开发和测试
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -e '.[test]'
-python -m pytest
-wechat-work-recorder
+.venv\Scripts\python.exe -m pip install -e '.[test]'
+.venv\Scripts\python.exe -m pytest
 ```
 
-WPS 可以打开 `.xlsx`，后续使用 `openpyxl` 对账本**副本**写入。含宏或复杂公式的模板须先做兼容性验证。OCR 对图片质量、聊天布局和消息上下文敏感，所有识别结果都需要人工确认。
+项目模块：`ocr.py` 负责本地识别，`parser.py` 负责规则解析，`employees.py` 和 `settings.py` 管理员工及群名，`payroll.py` 计算金额，`workbook.py` 定义真实账本接口并生成模拟表，`app.py` 实现窗口。
 
-## 项目结构
-
-- `src/wechat_work_recorder/models.py`：记录和员工数据结构。
-- `ocr.py`：OCR 接口和本地 Tesseract 适配器。
-- `parser.py`：保守规则解析。
-- `payroll.py`：工资计算。
-- `employees.py`：员工与群配置接口。
-- `workbook.py`：账本预览与写入副本接口。
-- `app.py`：PySide6 粘贴窗口。
-- `tests/`：业务模块基础测试。
-
-## 后续接入资料
-
-需要真实员工名单及别名、三个群的标识、典型聊天截图和工资账本的脱敏副本或字段说明，才能完善消息上下文、人工确认和 Excel 列映射。不要在配置文件中保存敏感工资数据。
-
-## 打包准备
-
-业务模块与窗口分离，可在 Windows 上使用 PyInstaller 构建；需将 Tesseract 可执行文件及 `chi_sim` 语言数据作为独立运行依赖或按其许可证一起分发。当前尚未生成或验证 Windows 安装包。
+真实 WPS Excel 工资账本的工作表、列映射和重复记录处理尚未确定，`UnconfiguredWorkbookWriter.write_copy` 会拒绝写入。需要账本脱敏模板或字段说明后才能开发这一部分。尚未制作或验证 Windows 安装包；未来可用 PyInstaller 打包，但仍需处理 Tesseract 和中文语言数据的安装或分发。
