@@ -19,8 +19,9 @@ def test_settings_parse_and_confirmed_mock_workbook(tmp_path):
         write_mock_workbook(path, result.records)
     write_mock_workbook(path, result.records, confirmed=True)
     ws = load_workbook(path, read_only=True).active
-    assert ws["E2"].value == "WX-123/ABC"
-    assert ws["I2"].value == "6.00"
+    assert ws["D2"].value == "WX-123/ABC"
+    assert ws["G2"].value == 6
+    assert ws["H2"].value == 6
     original = path.read_bytes()
     with pytest.raises(FileExistsError):
         write_mock_workbook(path, result.records, confirmed=True)

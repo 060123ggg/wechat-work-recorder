@@ -68,12 +68,12 @@ def test_wechat_text_to_table_without_quantity_warning(monkeypatch, tmp_path, wo
     app.clipboard().setText(f'测试昵称\n2026年10月12日 19:52\n{work_line}')
     window.import_clipboard_text()
     assert window.table.rowCount() == 1
-    assert [window.table.item(0, column).text() for column in (1, 4, 5, 6, 8)] == [
-        '2026-10-12', code, qty, price, amount]
+    assert [window.table.item(0, column).text() for column in (0, 3, 4, 5, 6)] == [
+        '2026/10/12', code, qty, price, amount]
     assert not window.unresolved_warnings
     assert not window.review_notes.toPlainText()
     assert window.total_label.text() == f'总计：{amount}元'
-    assert window.reviewed_records()[0].source_text == window.output.toPlainText()
+    assert window.reviewed_records()[0].source_text == work_line
     window.close()
 
 
@@ -111,9 +111,9 @@ def test_mixed_piece_and_hourly_note_reaches_table_and_mock_book(monkeypatch, tm
     window.import_clipboard_text()
     assert window.table.rowCount() == 2
     assert not window.unresolved_warnings
-    assert [window.table.item(row, 8).text() for row in range(2)] == ['162.00', '45.00']
-    assert window.table.item(1, 7).text() == '3'
-    assert window.table.item(1, 9).text() == '贴标套袋打包'
+    assert [window.table.item(row, 6).text() for row in range(2)] == ['162.00', '45.00']
+    assert window.table.item(1, 4).text() == '3'
+    assert window.reviewed_records()[1].note == '贴标套袋打包'
     assert window.total_label.text() == '总计：207.00元'
     records = window.reviewed_records()
     assert records[1].note == '贴标套袋打包'
@@ -121,7 +121,7 @@ def test_mixed_piece_and_hourly_note_reaches_table_and_mock_book(monkeypatch, tm
     write_mock_workbook(destination, records, confirmed=True)
     book = load_workbook(destination, read_only=True)
     try:
-        assert book.active.cell(3, 10).value == '贴标套袋打包'
+        assert book['审核追溯'].cell(3, 4).value == '贴标套袋打包'
     finally:
         book.close()
     window.close()

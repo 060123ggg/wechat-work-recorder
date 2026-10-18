@@ -28,8 +28,8 @@ def test_paste_image_parse_and_edit_amount(monkeypatch, tmp_path):
     app.clipboard().setImage(QImage(20, 20, QImage.Format.Format_RGB32))
     window.paste_image()
     assert window.table.rowCount() == 1
-    assert window.table.item(0, 8).text() == "6.00"
-    window.table.item(0, 5).setText("4")
-    assert window.table.item(0, 8).text() == "12.00"
+    assert window.table.item(0, 6).text() == "6.00"
+    window.table.item(0, 4).setText("4")
+    assert window.table.item(0, 6).text() == "12.00"
     assert len(window.reviewed_records()) == 1
     window.close()

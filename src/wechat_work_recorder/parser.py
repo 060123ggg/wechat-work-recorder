@@ -146,14 +146,14 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                 if confirmed is not None and unit_price != confirmed:
                     price_warnings.append(f"第{pending_line}行 {item_code} 消息单价{unit_price}元，与已确认默认价{confirmed}元不同；按消息单价计算，保存前须确认")
                 record = WorkRecord(pending_employee, pending_date, WorkKind.PIECE, group_id,
-                                    original_body, item_code, qty, unit_price)
+                                    original_body, item_code, qty, unit_price, source_line=pending_line)
             else:
                 marker = HOURLY_START.search(body)
                 if marker is None:
                     raise ValueError("缺少计时内容")
                 hours, note = parse_hour_entry(body[marker.start():])
                 record = WorkRecord(pending_employee, pending_date, WorkKind.HOURLY, group_id,
-                                    original_body, hours=hours, note=note)
+                                    original_body, hours=hours, note=note, source_line=pending_line)
             key = record_key(record)
             if key in seen:
                 raise ValueError("疑似重复记录，请人工确认")
