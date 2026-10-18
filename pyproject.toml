@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechat-work-recorder"
+version = "0.1.0"
+description = "微信记工助手：截图识别和工资核对桌面应用"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.7,<7", "Pillow>=10,<12", "pytesseract>=0.3.10,<1", "openpyxl>=3.1,<4"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+wechat-work-recorder = "wechat_work_recorder.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
