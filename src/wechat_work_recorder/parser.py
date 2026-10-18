@@ -118,7 +118,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     qty = Decimal(quantity.group("value"))
                     unit_price = catalog.default_price(item_code)
                     if unit_price is None:
-                        raise ValueError(f"{item_code} 未确认现行默认单价；历史价格仅供参考：{catalog.historical_prices(item_code)}")
+                        raise ValueError(f"{item_code} 未确认现行默认单价，请人工填写单价")
                 elif separated:
                     item_code = separated.group("code")
                     if item_code not in catalog.codes:
@@ -134,7 +134,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     qty = Decimal(no_price.group("qty"))
                     unit_price = catalog.default_price(item_code)
                     if unit_price is None:
-                        raise ValueError(f"{item_code} 未确认现行默认单价；历史价格仅供参考：{catalog.historical_prices(item_code)}")
+                        raise ValueError(f"{item_code} 未确认现行默认单价，请人工填写单价")
                 else:
                     raise ValueError("货号、数量或单价不完整")
                 item_code = normalize_code(item_code)
