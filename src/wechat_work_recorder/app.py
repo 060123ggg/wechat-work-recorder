@@ -22,7 +22,7 @@ from .payroll import calculate_amount
 from .settings import directory_from_settings, load_settings, save_settings
 from .workbook import write_mock_workbook
 
-HEADERS = ["员工", "日期", "群", "类型(piece/hourly)", "完整货号", "数量", "单价", "工时", "工资"]
+HEADERS = ["员工", "日期", "群", "类型(piece/hourly)", "完整货号", "数量", "单价", "工时", "工资", "工作备注"]
 
 
 class MainWindow(QMainWindow):
@@ -361,14 +361,14 @@ class MainWindow(QMainWindow):
                 next(e for e in self.employees if str(self.employees.index(e) + 1) == record.employee_id))
         values = [name, record.work_date.isoformat(), record.group_id, record.kind.value,
                   record.item_code or "", str(record.quantity or ""), str(record.unit_price or ""),
-                  str(record.hours or ""), str(calculate_amount(record))]
+                  str(record.hours or ""), str(calculate_amount(record)), record.note or ""]
         for column, value in enumerate(values):
             self.table.setItem(row, column, QTableWidgetItem(value))
 
     def add_empty_record(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        values = ["", date.today().isoformat(), self.group_combo.currentText(), "piece", "", "", "", "", ""]
+        values = ["", date.today().isoformat(), self.group_combo.currentText(), "piece", "", "", "", "", "", ""]
         for col, value in enumerate(values):
             self.table.setItem(row, col, QTableWidgetItem(value))
 
@@ -401,7 +401,7 @@ class MainWindow(QMainWindow):
     def reviewed_records(self) -> list[WorkRecord]:
         records = []
         for row in range(self.table.rowCount()):
-            values = [self.table.item(row, col).text().strip() if self.table.item(row, col) else "" for col in range(9)]
+            values = [self.table.item(row, col).text().strip() if self.table.item(row, col) else "" for col in range(len(HEADERS))]
             if values[0] not in self.employees or values[2] not in self.groups:
                 raise ValueError(f"第{row + 1}行员工或群不在设置中")
             kind = WorkKind(values[3])
@@ -411,7 +411,8 @@ class MainWindow(QMainWindow):
                 values[2], self.output.toPlainText(), values[4] or None,
                 Decimal(values[5]) if values[5] else None,
                 Decimal(values[6]) if values[6] else None,
-                Decimal(values[7]) if values[7] else None)
+                Decimal(values[7]) if values[7] else None,
+                values[9] or None)
             amount = calculate_amount(record)
             if values[8] != str(amount):
                 raise ValueError(f"第{row + 1}行工资须为按规则计算的 {amount} 元")

@@ -22,24 +22,33 @@ COMPACT_PIECE = re.compile(
     r"(?P<price>\d+(?:\.\d+)?)(?=\s|元|计时|工时|$|[,，;；])"
 )
 STANDALONE_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
-WORKLIKE = re.compile(r"货号|数量|单价|计时|工时|\d+(?:\.\d+)?\s*[＊*×✘xX]|[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
-HOURLY_START = re.compile(r"计时|工时|\d+(?:\.\d+)?\s*(?:小时|时)")
+WORKLIKE = re.compile(r"货号|数量|单价|计时|工时|计\s*\d|\d+(?:\.\d+)?\s*(?:小时|时|[＊*×✘xX])|[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
+HOURLY_START = re.compile(r"计时|工时|计(?=\s*[:：]?\s*\d)|\d+(?:\.\d+)?\s*(?:小时|时)")
 HOUR_VALUE = re.compile(
-    r"^(?:计时|工时)?\s*[:：]?\s*(?P<hours>\d+(?:\.\d+)?)\s*"
-    r"(?P<unit>小时|时|h)?\s*(?:(?P<minutes>\d+)\s*分(?:钟)?|(?P<half>半))?\s*$"
+    r"^(?:计时|工时|计)?\s*[:：]?\s*(?P<hours>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>小时|时|h)?\s*(?:(?P<minutes>\d+)\s*分(?:钟)?|(?P<half>半))?"
+    r"(?:\s*[＊*×✘xX]\s*(?P<rate>\d+(?:\.\d+)?))?"
+    r"\s*(?P<note>（[^（）]+）|\([^()]+\)|[\u4e00-\u9fff]+)?\s*$"
 )
 
 
 def record_key(record: WorkRecord) -> tuple:
     """用于识别同一批/同一会话中完全相同的记工记录。"""
     return (record.employee_id, record.work_date, record.group_id, record.kind,
-            record.item_code, record.quantity, record.unit_price, record.hours)
+            record.item_code, record.quantity, record.unit_price, record.hours, record.note)
 
 
 def parse_hours(value: str) -> Decimal:
+    return parse_hour_entry(value)[0]
+
+
+def parse_hour_entry(value: str) -> tuple[Decimal, str | None]:
     match = HOUR_VALUE.fullmatch(value.strip())
     if not match:
         raise ValueError("无法确认工时格式")
+    rate = match.group('rate')
+    if rate is not None and Decimal(rate) != Decimal('15'):
+        raise ValueError('消息中的计时时薪不是已确认的15元，请人工确认')
     hours = Decimal(match.group("hours"))
     minutes = int(match.group("minutes") or 0)
     if match.group("half"):
@@ -51,7 +60,13 @@ def parse_hours(value: str) -> Decimal:
     result = hours + Decimal(minutes) / Decimal(60)
     if result <= 0 or result > 24:
         raise ValueError("工时超出范围")
-    return result
+    note = match.group('note')
+    if note:
+        if note.startswith(('（', '(')):
+            note = note[1:-1].strip()
+        if note.startswith(('小时', '时', '分钟', '分', '半', '多')):
+            raise ValueError('工时后的文字可能是未解析的时间，请人工确认')
+    return result, note
 
 
 def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
@@ -136,9 +151,9 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                 marker = HOURLY_START.search(body)
                 if marker is None:
                     raise ValueError("缺少计时内容")
-                hours = parse_hours(body[marker.start():])
+                hours, note = parse_hour_entry(body[marker.start():])
                 record = WorkRecord(pending_employee, pending_date, WorkKind.HOURLY, group_id,
-                                    original_body, hours=hours)
+                                    original_body, hours=hours, note=note)
             key = record_key(record)
             if key in seen:
                 raise ValueError("疑似重复记录，请人工确认")
@@ -162,7 +177,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
         labelled_piece = re.search(r"货号", raw_line)
         compact_piece = SEPARATED_PIECE.search(raw_line) or COMPACT_PIECE.search(raw_line) or PRICELESS_PIECE.search(raw_line)
         piece_start = (labelled_piece or compact_piece).start() if (labelled_piece or compact_piece) else None
-        hourly_label = re.search(r"计时|工时", raw_line)
+        hourly_label = HOURLY_START.search(raw_line)
         hour_start = hourly_label.start() if hourly_label else None
         if piece_start is not None and hour_start is not None:
             split_at = max(piece_start, hour_start)

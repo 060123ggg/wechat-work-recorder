@@ -95,3 +95,33 @@ def test_unknown_nickname_reports_identity_only(monkeypatch, tmp_path):
     assert '数量边界待确认' not in notes
     assert '8393--6*4' in notes
     window.close()
+
+
+def test_mixed_piece_and_hourly_note_reaches_table_and_mock_book(monkeypatch, tmp_path):
+    from openpyxl import load_workbook
+    from wechat_work_recorder.roster import save_private_roster
+    from wechat_work_recorder.workbook import write_mock_workbook
+    monkeypatch.setenv('APPDATA', str(tmp_path))
+    save_settings([employee.name for employee in roster()], ['一群'])
+    save_private_roster(roster())
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.bindings.bind('一群', '测试昵称', 'AM-1001')
+    app.clipboard().setText('测试昵称\n2026年10月12日 19:52\n8352~~270*0.6\n计时3（贴标套袋打包）')
+    window.import_clipboard_text()
+    assert window.table.rowCount() == 2
+    assert not window.unresolved_warnings
+    assert [window.table.item(row, 8).text() for row in range(2)] == ['162.00', '45.00']
+    assert window.table.item(1, 7).text() == '3'
+    assert window.table.item(1, 9).text() == '贴标套袋打包'
+    assert window.total_label.text() == '总计：207.00元'
+    records = window.reviewed_records()
+    assert records[1].note == '贴标套袋打包'
+    destination = tmp_path / '模拟记工.xlsx'
+    write_mock_workbook(destination, records, confirmed=True)
+    book = load_workbook(destination, read_only=True)
+    try:
+        assert book.active.cell(3, 10).value == '贴标套袋打包'
+    finally:
+        book.close()
+    window.close()

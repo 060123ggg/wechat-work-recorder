@@ -28,6 +28,7 @@ class WorkRecord:
     quantity: Decimal | None = None
     unit_price: Decimal | None = None
     hours: Decimal | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
