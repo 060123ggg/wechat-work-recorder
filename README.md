@@ -4,7 +4,9 @@ Windows 桌面软件原型。用 PySide6 接收微信群聊天截图，通过本
 
 ## Windows 下载、安装、启动
 
-安装包由 `feat/message-price-upgrade` 分支的 GitHub Actions 构建。打开仓库的 **Actions → Windows 安装包 → 最近一次成功的运行**，在页面下方的 **Artifacts** 下载 `WeChatWorkRecorder-Windows-Setup`，解压后双击其中的 `WeChatWorkRecorder-Setup-0.2.0.exe`。按提示安装后，双击桌面上的「微信记工助手」图标即可启动。支持 64 位 Windows；安装包自带 Python、PySide6、Tesseract 和简体中文 OCR 数据，用户不必另装 Python 或 OCR。Actions 的附件可能需要登录 GitHub，默认保留 30 天；如有 Windows 安全提示，请核对下载来源和文件名后自行决定是否运行。当前安装包未做代码签名。
+安装包由 `feat/message-price-upgrade` 分支的 GitHub Actions 构建。打开仓库的 **Actions → Windows 安装包 → 最近一次成功的运行**，在页面下方的 **Artifacts** 下载 `WeChatWorkRecorder-Windows-Setup`，解压后双击其中的 `WeChatWorkRecorder-Setup-0.2.0.exe`。按提示安装后，双击桌面上的「微信记工助手」图标即可启动。支持 64 位 Windows 10/11；安装包自带 Python、PySide6、Tesseract 和简体中文 OCR 数据，用户不必另装 Python 或 OCR。Actions 的附件可能需要登录 GitHub，默认保留 30 天；如有 Windows 安全提示，请核对下载来源和文件名后自行决定是否运行。当前安装包未做代码签名。
+
+本版已验证的安装附件位于 [0.2.0 成功构建](https://github.com/060123ggg/wechat-work-recorder/actions/runs/39291081102) 的 Artifacts 区域。
 
 安装包不带真实员工名册、昵称绑定或工资账本。本机数据保存在当前用户的 `%APPDATA%\WechatWorkRecorder`，升级或卸载程序不会主动删除这些数据。首次安装按下文的「使用流程」完成本机设置；已有源码版保存在同一 Windows 用户目录的数据会继续被读取。安装前先备份该目录更稳妥。
 
