@@ -2,6 +2,7 @@
 import json
 import sqlite3
 from dataclasses import asdict
+from contextlib import closing
 from difflib import SequenceMatcher
 from pathlib import Path
 from .settings import settings_path
@@ -23,7 +24,7 @@ class ImportHistory:
     def find(self, record):
         if not self.path.exists():
             return None
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection:
             rows = connection.execute('SELECT signature FROM imports WHERE employee=? AND work_date=? AND kind=? AND code=?',
                 (record.employee_id, record.work_date.isoformat(), record.kind.value, record.item_code or '')).fetchall()
         value = signature(record)
@@ -37,7 +38,7 @@ class ImportHistory:
     def remember(self, records, output='WPS剪贴板'):
         records = list(records)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute('CREATE TABLE IF NOT EXISTS imports (employee TEXT, work_date TEXT, kind TEXT, code TEXT, signature TEXT, UNIQUE(employee,work_date,kind,code,signature))')
             connection.execute('CREATE TABLE IF NOT EXISTS output_audit (id INTEGER PRIMARY KEY, created_at TEXT DEFAULT CURRENT_TIMESTAMP, output TEXT, record_json TEXT)')
             connection.executemany('INSERT OR IGNORE INTO imports VALUES(?,?,?,?,?)',
