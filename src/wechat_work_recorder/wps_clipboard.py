@@ -14,6 +14,8 @@ def to_wps_tsv(records: Sequence[WorkRecord], names_by_id: dict[str, str]) -> st
         if not name:
             raise ValueError(f"找不到员工 {record.employee_id} 的姓名")
         if record.kind == WorkKind.HOURLY:
+            if record.unit_price is not None and record.unit_price != Decimal("15"):
+                raise ValueError("计时时薪必须为15元，请核对该记录")
             code, quantity, rate = "计时", record.hours, Decimal("15")
         elif record.kind == WorkKind.PIECE:
             code, quantity, rate = record.item_code, record.quantity, record.unit_price
@@ -26,5 +28,7 @@ def to_wps_tsv(records: Sequence[WorkRecord], names_by_id: dict[str, str]) -> st
                  name, "", str(code), "", str(quantity), str(rate), f"{amount:.2f}"]
         if any("\t" in str(v) or "\n" in str(v) or "\r" in str(v) for v in cells):
             raise ValueError("数据中包含非法换行或制表符")
+        if any(str(v).lstrip().startswith(("=", "+", "-", "@")) for v in (record.employee_id, name, code)):
+            raise ValueError("货号、工号或姓名不能以公式符号开头，请核对原文")
         lines.append("\t".join(cells))
     return "\r\n".join(lines)

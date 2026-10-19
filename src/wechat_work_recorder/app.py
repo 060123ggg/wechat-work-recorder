@@ -37,6 +37,7 @@ class MainWindow(QMainWindow):
         self.employee_by_id = {employee.employee_id: employee for employee in self.roster}
         self.unresolved_warnings = []
         self.saved_record_keys: set[tuple] = set()
+        self.copied_record_keys: set[tuple] = set()
         self.needs_parse = False
         self.setWindowTitle("微信记工助手")
         self.resize(1050, 720)
@@ -282,19 +283,27 @@ class MainWindow(QMainWindow):
         try:
             if self.needs_parse or self.unresolved_warnings:
                 raise ValueError("存在未重新解析或待核对的内容，暂不能复制")
+            if not self.roster:
+                raise ValueError("缺少已确认的正式员工名册，不能复制到 WPS")
             records = self.reviewed_records()
             keys = [record_key(record) for record in records]
-            if len(keys) != len(set(keys)):
-                raise ValueError("存在重复记录，请先核对")
+            if len(keys) != len(set(keys)) or any(key in self.copied_record_keys for key in keys):
+                raise ValueError("存在重复记录或本次运行中已复制的记录，请先核对")
             names = {employee.employee_id: employee.name for employee in self.roster}
-            if not self.roster:
-                names = {str(i + 1): name for i, name in enumerate(self.employees)}
             data = to_wps_tsv(records, names)
         except (ValueError, InvalidOperation) as exc:
             QMessageBox.warning(self, "复制失败", str(exc))
             return
+        answer = QMessageBox.question(self, "确认复制到 WPS",
+            f"请先核对这 {len(records)} 条记录的员工、日期、数量、单价和工资。将复制 B:J 九列。"
+            "粘贴会覆盖目标区域原有内容，包括 E/G 列的数据和 J 列的工资公式；"
+            "目标区域若有合并单元格也可能受到影响。请只在已确认完全空白且无合并单元格的区域粘贴，"
+            "并在 WPS 中检查每列与金额。确认要复制吗？")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         QApplication.clipboard().setText(data)
-        QMessageBox.information(self, "已复制", f"已复制 {len(records)} 条记录。请在 WPS 对应月份空白行的 B 列单元格粘贴。\\n粘贴前请确认目标区域为空，且不包含合并单元格；不会自动写入 K 列小计。")
+        self.copied_record_keys.update(keys)
+        QMessageBox.information(self, "已复制", f"已复制 {len(records)} 条记录。请在 WPS 对应月份完全空白且无合并单元格的 B:J 区域粘贴，并核对金额；不会自动写入 K 列。")
 
     def save_mock(self):
         try:
