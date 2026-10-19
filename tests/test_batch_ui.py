@@ -1,4 +1,6 @@
 import os
+import json
+from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QInputDialog
 from wechat_work_recorder import app as app_module
@@ -9,6 +11,13 @@ from wechat_work_recorder.wechat_text import nickname_candidates
 
 def roster():
     return [Employee(f"E{i:02d}", f"员工{i:02d}") for i in range(1, 18)]
+
+
+def private_roster(tmp_path):
+    path = Path(tmp_path) / 'WechatWorkRecorder' / 'employees.private.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([{'employee_id': f'AM-{1000+i}', 'name': '测试员工' if i == 3 else f'员工{i:02d}'}
+                                for i in range(1, 18)], ensure_ascii=False), encoding='utf-8')
 
 
 def test_unknown_batch_nickname_prompts_then_persists(monkeypatch, tmp_path):
@@ -25,7 +34,7 @@ def test_unknown_batch_nickname_prompts_then_persists(monkeypatch, tmp_path):
         return "E03  员工03", True
 
     monkeypatch.setattr(QInputDialog, "getItem", choose)
-    app.clipboard().setText("2026/10/9\n雪琴\n8513-7 70*1.7\n计时3.5")
+    app.clipboard().setText("2026/10/9\n测试员工\n8513-7 70*1.7\n计时3.5")
     window.import_clipboard_text()
     assert len(calls) == 1
     assert window.table.rowCount() == 2
@@ -33,7 +42,7 @@ def test_unknown_batch_nickname_prompts_then_persists(monkeypatch, tmp_path):
     assert all(r.employee_id == "E03" for r in window.reviewed_records())
     window.close()
     store = NicknameBindingStore(tmp_path / "WechatWorkRecorder" / "bindings.sqlite3")
-    assert store.resolve("一群", "雪琴") == "E03"
+    assert store.resolve("一群", "测试员工") == "E03"
     store.close()
 
 
@@ -44,16 +53,16 @@ def test_confirmed_mapping_is_used_without_prompt(monkeypatch, tmp_path):
     window = app_module.MainWindow()
     window.groups = ["一群"]
     window.group_combo.addItem("一群")
-    window.bindings.bind("一群", "雪琴", "E02")
+    window.bindings.bind("一群", "测试员工", "E02")
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (_ for _ in ()).throw(AssertionError("must not prompt")))
-    app.clipboard().setText("2026/10/9\n雪琴\n8513-7 70*1.7")
+    app.clipboard().setText("2026/10/9\n测试员工\n8513-7 70*1.7")
     window.import_clipboard_text()
     assert window.reviewed_records()[0].employee_id == "E02"
     window.close()
 
 
 def test_sender_prefix_on_same_line_is_candidate():
-    assert nickname_candidates("雪琴：8513-7 70*1.7", ["一群"]) == ["雪琴"]
+    assert nickname_candidates("测试员工：8513-7 70*1.7", ["一群"]) == ["测试员工"]
 
 
 def test_unknown_nickname_cancel_blocks_accounting(monkeypatch, tmp_path):
@@ -82,10 +91,10 @@ def test_batch_copy_two_confirmed_senders_use_distinct_employee_ids(monkeypatch,
     window = app_module.MainWindow()
     window.groups = ["一群"]
     window.group_combo.addItem("一群")
-    window.bindings.bind("一群", "雪琴", "E02")
+    window.bindings.bind("一群", "测试员工", "E02")
     window.bindings.bind("一群", "小李", "E03")
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (_ for _ in ()).throw(AssertionError("已绑定昵称不应弹窗")))
-    app.clipboard().setText("2026/10/9 09:30 雪琴\n8513-7 70*1.7\n2026/10/9 10:30 小李\n计时3.5")
+    app.clipboard().setText("2026/10/9 09:30 测试员工\n8513-7 70*1.7\n2026/10/9 10:30 小李\n计时3.5")
     window.import_clipboard_text()
     assert [record.employee_id for record in window.reviewed_records()] == ["E02", "E03"]
     assert not window.unresolved_warnings
@@ -100,7 +109,7 @@ def test_similar_nickname_is_not_auto_bound(monkeypatch, tmp_path):
     window = app_module.MainWindow()
     window.groups = ["一群"]
     window.group_combo.addItem("一群")
-    window.bindings.bind("一群", "雪琴", "E02")
+    window.bindings.bind("一群", "测试员工", "E02")
     prompts = []
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (prompts.append(args) or "", False))
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: None)
@@ -121,10 +130,10 @@ def test_same_nickname_in_two_groups_uses_selected_group(monkeypatch, tmp_path):
     window.groups = ["一群", "二群"]
     window.group_combo.addItems(window.groups)
     window.group_combo.setCurrentText("二群")
-    window.bindings.bind("一群", "雪琴", "E01")
-    window.bindings.bind("二群", "雪琴", "E02")
+    window.bindings.bind("一群", "测试员工", "E01")
+    window.bindings.bind("二群", "测试员工", "E02")
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: (_ for _ in ()).throw(AssertionError("已绑定昵称不应弹窗")))
-    app.clipboard().setText("2026/10/9\n雪琴\n8513-7 70*1.7")
+    app.clipboard().setText("2026/10/9\n测试员工\n8513-7 70*1.7")
     window.import_clipboard_text()
     assert window.reviewed_records()[0].employee_id == "E02"
     window.close()
@@ -132,6 +141,7 @@ def test_same_nickname_in_two_groups_uses_selected_group(monkeypatch, tmp_path):
 
 def test_actual_roster_requires_explicit_first_binding(monkeypatch, tmp_path):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    private_roster(tmp_path)
     app = QApplication.instance() or QApplication([])
     window = app_module.MainWindow()
     window.groups = ["一群"]
@@ -140,10 +150,10 @@ def test_actual_roster_requires_explicit_first_binding(monkeypatch, tmp_path):
 
     def choose(parent, title, label, options, current, editable):
         prompts.append(options)
-        return "AM-1003  雪琴", True
+        return "AM-1003  测试员工", True
 
     monkeypatch.setattr(QInputDialog, "getItem", choose)
-    app.clipboard().setText("2026/10/9\n雪琴\n8513-7 70*1.7\n计时3.5")
+    app.clipboard().setText("2026/10/9\n测试员工\n8513-7 70*1.7\n计时3.5")
     window.import_clipboard_text()
     assert len(prompts) == 1
     assert len(prompts[0]) == 18  # 首项为必须跳过的“请选择员工”
@@ -160,10 +170,10 @@ def test_unknown_sender_after_known_sender_never_inherits_identity(monkeypatch, 
     window = app_module.MainWindow()
     window.groups = ["一群"]
     window.group_combo.addItem("一群")
-    window.bindings.bind("一群", "雪琴", "E02")
+    window.bindings.bind("一群", "测试员工", "E02")
     monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("", False))
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: None)
-    app.clipboard().setText("2026/10/9\n雪琴\n8513-7 70*1.7\n陌生人\n8510-1 20*2")
+    app.clipboard().setText("2026/10/9\n测试员工\n8513-7 70*1.7\n陌生人\n8510-1 20*2")
     window.import_clipboard_text()
     records = window.reviewed_records()
     assert len(records) == 1
@@ -176,16 +186,17 @@ def test_unknown_sender_after_known_sender_never_inherits_identity(monkeypatch, 
 def test_screenshot_ocr_uses_confirmed_binding_after_window_restart(monkeypatch, tmp_path):
     from PySide6.QtGui import QImage
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    private_roster(tmp_path)
     app = QApplication.instance() or QApplication([])
 
     class ScreenshotOcr:
         def recognize(self, image):
-            return "2026/10/9\n雪琴\n8513-7 70*1.7\n计时3.5"
+            return "2026/10/9\n测试员工\n8513-7 70*1.7\n计时3.5"
 
     first = app_module.MainWindow(ocr=ScreenshotOcr())
     first.groups = ["一群"]
     first.group_combo.addItem("一群")
-    first.bindings.bind("一群", "雪琴", "AM-1003")
+    first.bindings.bind("一群", "测试员工", "AM-1003")
     first.close()
 
     second = app_module.MainWindow(ocr=ScreenshotOcr())

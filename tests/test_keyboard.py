@@ -11,6 +11,7 @@ from wechat_work_recorder.app import MainWindow
 @pytest.fixture(autouse=True)
 def use_legacy_roster_for_existing_window_tests(monkeypatch):
     monkeypatch.setattr("wechat_work_recorder.app.load_builtin_roster", lambda: [])
+    monkeypatch.setattr("wechat_work_recorder.app.MainWindow.ensure_roster", lambda self: True)
 
 
 class ControlledOcr:
@@ -44,7 +45,7 @@ def test_real_ctrl_v_from_each_control(monkeypatch, tmp_path, focused):
     app.processEvents()
     assert ocr.calls == 1
     assert window.table.rowCount() == 1
-    assert window.table.item(0, 4).text() == "8513-6"
+    assert window.table.item(0, 3).text() == "8513-6"
     window.close()
 
 
@@ -130,18 +131,18 @@ def test_compact_piece_and_time_are_shown_in_window(monkeypatch, tmp_path):
 
     class ReportedMessageOcr:
         def recognize(self, image):
-            return "2026/10/9\n雪琴\n8513-7 70*1.7\n计时3.5"
+            return "2026/10/9\n测试员工\n8513-7 70*1.7\n计时3.5"
 
     window = MainWindow(ocr=ReportedMessageOcr())
-    window.employees = ["雪琴"]
+    window.employees = ["测试员工"]
     window.groups = ["一群"]
     window.group_combo.addItem("一群")
     app.clipboard().setImage(QImage(20, 20, QImage.Format.Format_RGB32))
     window.paste_image()
     assert window.table.rowCount() == 2
-    assert window.table.item(0, 4).text() == "8513-7"
-    assert window.table.item(0, 8).text() == "119.00"
-    assert window.table.item(1, 8).text() == "52.50"
+    assert window.table.item(0, 3).text() == "8513-7"
+    assert window.table.item(0, 6).text() == "119.00"
+    assert window.table.item(1, 6).text() == "52.50"
     assert window.total_label.text() == "总计：171.50元"
     assert not window.unresolved_warnings
     window.close()

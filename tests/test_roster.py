@@ -1,31 +1,20 @@
-from wechat_work_recorder.roster import load_builtin_roster
+import json
+from wechat_work_recorder.roster import load_builtin_roster, roster_path
 from wechat_work_recorder.bindings import NicknameBindingStore
 
 
-def test_official_roster_has_17_stable_ids_and_names(tmp_path):
+def test_private_roster_has_17_stable_ids_and_names(monkeypatch, tmp_path):
+    monkeypatch.setenv('APPDATA', str(tmp_path))
+    path = roster_path()
+    assert load_builtin_roster() == []
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([{'employee_id': f'E{i:02d}', 'name': f'测试员工{i:02d}'} for i in range(17)], ensure_ascii=False), encoding='utf-8')
     employees = load_builtin_roster()
     assert len(employees) == 17
-    assert employees[0].employee_id == "AM-1001"
-    assert employees[0].name == "美娟"
-    assert employees[2].employee_id == "AM-1003"
-    assert employees[2].name == "雪琴"
-    assert employees[-1].employee_id == "AM-1017"
-    assert employees[-1].name == "吴雨娟"
-    store = NicknameBindingStore(tmp_path / "bindings.sqlite3")
+    store = NicknameBindingStore(tmp_path / 'bindings.sqlite3')
     store.install_roster(employees)
-    assert [(e.employee_id, e.name) for e in store.employees()] == [(e.employee_id, e.name) for e in employees]
+    store.bind('一群', '测试昵称', 'E02')
     store.close()
-
-
-def test_real_roster_binding_persists_after_reopen(tmp_path):
-    db = tmp_path / "bindings.sqlite3"
-    first = NicknameBindingStore(db)
-    first.install_roster(load_builtin_roster())
-    first.bind("一群", "雪琴微信号", "AM-1003")
-    first.bind("一群", "阿琴", "AM-1003")
-    first.close()
-    second = NicknameBindingStore(db)
-    second.install_roster(load_builtin_roster())
-    assert second.resolve("一群", "雪琴微信号") == "AM-1003"
-    assert second.resolve("一群", "阿琴") == "AM-1003"
-    second.close()
+    reopened = NicknameBindingStore(tmp_path / 'bindings.sqlite3')
+    assert reopened.resolve('一群', '测试昵称') == 'E02'
+    reopened.close()

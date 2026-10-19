@@ -28,9 +28,13 @@ class WorkRecord:
     quantity: Decimal | None = None
     unit_price: Decimal | None = None
     hours: Decimal | None = None
+    note: str | None = None
+    source_line: int | None = None
+    message_number: int | None = None
 
 
 @dataclass(frozen=True)
 class ParseResult:
     records: tuple[WorkRecord, ...]
     warnings: tuple[str, ...]
+    price_warnings: tuple[str, ...] = ()

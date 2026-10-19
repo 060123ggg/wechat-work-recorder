@@ -11,3 +11,5 @@ dist/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+employees.private.json
+catalog_overrides.json
