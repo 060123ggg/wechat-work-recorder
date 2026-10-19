@@ -4,12 +4,11 @@ Windows 桌面软件原型。用 PySide6 接收微信群聊天截图，通过本
 
 ## Windows 下载、安装、启动
 
-1. 在 GitHub 仓库页面选择 **Code → Download ZIP**，解压到一个普通文件夹。也可以用 Git 克隆仓库的开发分支。
-2. 安装 [Python 3.10 或更新版本](https://www.python.org/downloads/windows/)，安装时勾选 `py launcher`。
-3. 安装 Windows 版 Tesseract OCR，勾选或额外安装 `chi_sim` 简体中文语言数据，并将 Tesseract 安装目录加入系统 PATH。安装后重新打开程序。
-4. 双击项目文件夹内的 `start_windows.bat`。首次启动会自动创建 `.venv` 并安装 Python 依赖；需要联网。后续双击同一个文件启动。
+安装包由 `feat/windows-installer` 分支的 GitHub Actions 构建。打开仓库的 **Actions → Windows 安装包 → 最近一次成功的运行**，在页面下方的 **Artifacts** 下载 `WeChatWorkRecorder-Windows-Setup`，解压后双击其中的 `WeChatWorkRecorder-Setup-0.1.0.exe`。按提示安装后，双击桌面上的「微信记工助手」图标即可启动。支持 64 位 Windows；安装包自带 Python、PySide6、Tesseract 和简体中文 OCR 数据，用户不必另装 Python 或 OCR。Actions 的附件可能需要登录 GitHub，默认保留 30 天；如有 Windows 安全提示，请核对下载来源和文件名后自行决定是否运行。当前安装包未做代码签名。
 
-若 Windows 提示找不到 Tesseract，检查 PATH 是否包含 `tesseract.exe` 所在目录，以及其 `tessdata` 目录下是否有 `chi_sim.traineddata`。一键脚本不负责安装 Python 或 Tesseract。
+安装包不带真实员工名册、昵称绑定或工资账本。本机数据保存在当前用户的 `%APPDATA%\WechatWorkRecorder`，升级或卸载程序不会主动删除这些数据。首次安装按下文的「使用流程」完成本机设置；已有源码版保存在同一 Windows 用户目录的数据会继续被读取。安装前先备份该目录更稳妥。
+
+仅供开发者从源码运行：下载对应开发分支的 ZIP，安装 [Python 3.10+](https://www.python.org/downloads/windows/) 及带 `chi_sim` 的 Windows 版 Tesseract，再双击 `start_windows.bat`。该脚本仍保留，但它不等于安装包，会在线安装 Python 依赖。
 
 ## 使用流程
 
@@ -36,7 +35,7 @@ py -m venv .venv
 
 项目模块：`ocr.py` 负责本地识别，`parser.py` 负责规则解析，`employees.py` 和 `settings.py` 管理员工及群名，`payroll.py` 计算金额，`workbook.py` 定义真实账本接口并生成模拟表，`app.py` 实现窗口。
 
-真实 WPS Excel 工资账本的工作表、列映射和重复记录处理尚未确定，`UnconfiguredWorkbookWriter.write_copy` 会拒绝写入。需要账本脱敏模板或字段说明后才能开发这一部分。尚未制作或验证 Windows 安装包；未来可用 PyInstaller 打包，但仍需处理 Tesseract 和中文语言数据的安装或分发。
+真实 WPS Excel 工资账本仍不会被程序直接写入；`UnconfiguredWorkbookWriter.write_copy` 会拒绝写入。三段剪贴板复制须由用户在 WPS 副本中核对与粘贴。Windows 安装包在 GitHub Actions 中构建并执行安装后冒烟测试；真实电脑上的截图 OCR、桌面图标、昵称持久化与 WPS 粘贴仍需实机验证。
 
 ## 货号库与本机私有名册
 

@@ -1,0 +1,19 @@
+微信记工助手 Windows 安装包包含下列第三方组件：
+
+- Python 运行时：Python Software Foundation License
+  https://docs.python.org/3/license.html
+- PySide6 / Qt：LGPLv3、GPLv3 或商业授权；本项目使用动态库
+  https://doc.qt.io/qtforpython-6/licenses.html
+- Tesseract OCR 及 tessdata_fast 语言数据：Apache License 2.0
+  https://github.com/tesseract-ocr/tesseract
+  https://github.com/tesseract-ocr/tessdata_fast
+- pytesseract：Apache License 2.0
+  https://github.com/madmaze/pytesseract
+- Pillow：HPND License
+  https://python-pillow.github.io/pillow-website/docs/about.html
+- openpyxl：MIT License
+  https://openpyxl.readthedocs.io/en/stable/
+- PyInstaller 启动器：GPLv2 启动器例外
+  https://pyinstaller.org/en/stable/license.html
+
+此清单用于识别随安装包分发的主要组件。组件可能带有其他传递依赖；其完整授权条款以随组件分发的许可证文件和上述上游项目为准。

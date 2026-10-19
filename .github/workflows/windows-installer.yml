@@ -1,0 +1,93 @@
+name: Windows 安装包
+
+on:
+  push:
+    branches:
+      - feat/windows-installer
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -e ".[test]" "pyinstaller>=6.10,<7"
+      - name: Run all tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+      - name: Install Windows OCR and installer tools
+        shell: pwsh
+        run: |
+          choco install tesseract innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Chocolatey installation failed" }
+      - name: Build self-contained application
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean packaging/windows/WeChatWorkRecorder.spec
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+          $source = Join-Path $env:ProgramFiles 'Tesseract-OCR'
+          $target = Join-Path (Resolve-Path 'dist/WeChatWorkRecorder').Path 'tesseract'
+          if (-not (Test-Path (Join-Path $source 'tesseract.exe'))) { throw "Tesseract executable missing: $source" }
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          Copy-Item (Join-Path $source '*') $target -Recurse -Force
+          Copy-Item 'packaging/windows/THIRD_PARTY_NOTICES.txt' 'dist/WeChatWorkRecorder/THIRD_PARTY_NOTICES.txt'
+          $tessdata = Join-Path $target 'tessdata'
+          New-Item -ItemType Directory -Path $tessdata -Force | Out-Null
+          $revision = '87416418657359cb625c412a48b6e1d6d41c29bd'
+          foreach ($lang in @('chi_sim', 'eng')) {
+            $url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$revision/$lang.traineddata"
+            Invoke-WebRequest -Uri $url -OutFile (Join-Path $tessdata "$lang.traineddata")
+            if ((Get-Item (Join-Path $tessdata "$lang.traineddata")).Length -lt 100000) { throw "OCR language data missing: $lang" }
+          }
+          if (-not (Test-Path 'dist/WeChatWorkRecorder/_internal/wechat_work_recorder/historical_items.csv')) {
+            throw 'Historical catalog missing from application bundle'
+          }
+      - name: Smoke-test packaged application
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'wechat-work-recorder-smoke'
+          New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
+          & 'dist/WeChatWorkRecorder/WeChatWorkRecorder.exe' --packaging-smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Packaged application smoke test failed: $LASTEXITCODE" }
+      - name: Compile per-user installer
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler missing: $iscc" }
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $sourceDir = (Resolve-Path 'dist/WeChatWorkRecorder').Path
+          $outputDir = Join-Path (Get-Location).Path 'dist/installers'
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$sourceDir" "/DOutputDir=$outputDir" 'packaging/windows/installer.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed" }
+          if (-not (Get-ChildItem $outputDir -Filter '*.exe')) { throw 'Installer file not found' }
+      - name: Smoke-test installed application
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $installer = (Get-ChildItem 'dist/installers' -Filter '*.exe' | Select-Object -First 1).FullName
+          $testDir = Join-Path $env:RUNNER_TEMP 'wechat-work-recorder-installed'
+          $result = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$testDir" -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
+          & (Join-Path $testDir 'WeChatWorkRecorder.exe') --packaging-smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed application smoke test failed: $LASTEXITCODE" }
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeChatWorkRecorder-Windows-Setup
+          path: dist/installers/*.exe
+          if-no-files-found: error
+          retention-days: 30

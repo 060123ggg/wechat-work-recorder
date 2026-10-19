@@ -744,12 +744,22 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
+    smoke_test = "--packaging-smoke-test" in sys.argv
+    app = QApplication([sys.argv[0]] if smoke_test else sys.argv)
     try:
         window = MainWindow()
     except (BindingConflict, ValueError) as exc:
         QMessageBox.critical(None, "员工名册或绑定冲突", str(exc))
         return 1
+    if smoke_test:
+        # Windows CI 用实际打包后的 exe 验证界面、货号库和中文 OCR 均可加载。
+        import pytesseract
+        languages = set(pytesseract.get_languages(config=""))
+        ready = (window.catalog.codes and {"chi_sim", "eng"} <= languages
+                 and window.copy_wps_button.text() and window.copy_wps_f_button.text()
+                 and window.copy_wps_hi_button.text())
+        window.close()
+        return 0 if ready else 2
     window.show()
     return app.exec()
 
