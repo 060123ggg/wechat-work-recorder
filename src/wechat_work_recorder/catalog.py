@@ -8,6 +8,12 @@ from pathlib import Path
 
 DASHES = str.maketrans({char: '-' for char in '—–−‐‑－﹣'})
 CONFIRMED_DEFAULTS = {'8513-6': Decimal('1.70')}
+NAMED_PROJECT = re.compile(r'[\u4e00-\u9fff]{2,12}')
+
+
+def valid_catalog_code(code: str) -> bool:
+    return bool(re.fullmatch(r'\d{4}(?:-\d)?', code) or
+                (NAMED_PROJECT.fullmatch(code) and code not in ('计时', '工时')))
 
 
 def normalize_code(value: str) -> str:
@@ -49,8 +55,8 @@ class ItemCatalog:
 
     def add_code(self, code: str) -> None:
         code = normalize_code(code)
-        if not re.fullmatch(r'\d{4}(?:-\d)?', code):
-            raise ValueError('新增货号须为四位数字，或四位数字-一位数字')
+        if not valid_catalog_code(code):
+            raise ValueError('新增货号须为四位数字或四位数字-一位数字；工作项目须为2至12个汉字（不含计时）')
         self.additions.add(code)
         self.save()
 
@@ -59,7 +65,7 @@ class ItemCatalog:
         old, new = normalize_code(old), normalize_code(new)
         if old not in self.additions or old in self.historical:
             raise ValueError('只能修改本机新增、非历史货号')
-        if new in self.codes or not re.fullmatch(r'\d{4}(?:-\d)?', new):
+        if new in self.codes or not valid_catalog_code(new):
             raise ValueError('新货号无效或已存在')
         self.additions.remove(old)
         self.additions.add(new)

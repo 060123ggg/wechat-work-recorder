@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
         self.bindings_button = QPushButton("管理昵称绑定")
         self.bindings_button.clicked.connect(self.manage_bindings)
         controls.addWidget(self.bindings_button)
-        self.catalog_button = QPushButton("管理货号与默认价")
+        self.catalog_button = QPushButton("管理货号/项目与默认价")
         self.catalog_button.clicked.connect(self.manage_catalog)
         controls.addWidget(self.catalog_button)
         self.group_combo = QComboBox()
@@ -215,10 +215,10 @@ class MainWindow(QMainWindow):
 
     def manage_catalog(self):
         action, ok = QInputDialog.getItem(self, "管理货号", "选择操作：",
-                                         ["新增货号/维护现行价", "更正本机新增货号"], 0, False)
+                                         ["新增货号或工作项目/维护现行价", "更正本机新增货号或项目"], 0, False)
         if not ok:
             return
-        if action == "更正本机新增货号":
+        if action == "更正本机新增货号或项目":
             if not self.catalog.additions:
                 QMessageBox.information(self, "管理货号", "本机尚无新增货号")
                 return
@@ -235,7 +235,7 @@ class MainWindow(QMainWindow):
                 except ValueError as exc:
                     QMessageBox.warning(self, "货号设置无效", str(exc))
             return
-        code, ok = QInputDialog.getText(self, "管理货号", "输入完整货号：")
+        code, ok = QInputDialog.getText(self, "管理货号/项目", "输入完整货号或工作项目：")
         if not ok or not code.strip():
             return
         try:

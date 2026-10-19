@@ -90,3 +90,37 @@ def test_local_catalog_add_and_update(tmp_path):
     assert reopened.default_price('8513-7') is None
     assert normalize_code('8513一7') == '8513-7'
     assert not ItemCatalog(tmp_path / 'other.json').default_price('8513-7')
+
+
+def test_named_work_project_is_local_and_parses_only_after_confirmation(monkeypatch, tmp_path):
+    monkeypatch.setenv('APPDATA', str(tmp_path))
+    message = '2026/10/9\n测试员工\n打包-45*0.2'
+    before = parse_messages(message, directory(), '一群')
+    assert not before.records and before.warnings and '打包-45*0.2' in before.warnings[0]
+    catalog = ItemCatalog()
+    catalog.add_code('打包')
+    assert catalog.default_price('打包') is None
+    result = parse_messages(message, directory(), '一群')
+    assert not result.warnings and len(result.records) == 1
+    piece = result.records[0]
+    assert (piece.item_code, piece.quantity, piece.unit_price, calculate_amount(piece)) == (
+        '打包', Decimal('45'), Decimal('0.2'), Decimal('9.00'))
+    for line in ('打包- 45*0.2', '打包 45×0.2'):
+        mixed = parse_messages('2026/10/9\n测试员工\n' + line + '\n计时2', directory(), '一群')
+        assert not mixed.warnings and len(mixed.records) == 2
+        assert (mixed.records[0].item_code, calculate_amount(mixed.records[0])) == ('打包', Decimal('9.00'))
+        assert calculate_amount(mixed.records[1]) == Decimal('30.00')
+    assert '打包' in ItemCatalog().codes
+    incomplete = parse_messages('2026/10/9\n测试员工\n计时2\n打包-45', directory(), '一群')
+    assert len(incomplete.records) == 1 and incomplete.records[0].kind == WorkKind.HOURLY
+    assert incomplete.warnings and '打包-45' in incomplete.warnings[0]
+    with pytest.raises(ValueError):
+        catalog.add_code('计时')
+
+
+def test_named_work_project_can_be_renamed_locally(tmp_path):
+    catalog = ItemCatalog(tmp_path / 'catalog.json')
+    catalog.add_code('打包')
+    catalog.rename_added_code('打包', '包装')
+    reopened = ItemCatalog(tmp_path / 'catalog.json')
+    assert '包装' in reopened.codes and '打包' not in reopened.codes

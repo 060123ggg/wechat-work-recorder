@@ -50,3 +50,20 @@ def test_review_choice_reparses_and_recalculates(monkeypatch, tmp_path):
     assert window.table.rowCount() == 2
     assert window.total_label.text() == '总计：171.50元'
     window.close()
+
+
+def test_catalog_ui_accepts_named_project_and_imports_work(monkeypatch, tmp_path):
+    window = window_with_binding(monkeypatch, tmp_path)
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: None)
+    monkeypatch.setattr(QInputDialog, 'getItem', lambda *args: (args[3][0], True))
+    answers = iter([('打包', True), ('', True)])
+    monkeypatch.setattr(QInputDialog, 'getText', lambda *args, **kwargs: next(answers))
+    window.manage_catalog()
+    assert '打包' in window.catalog.codes
+    assert window.catalog.default_price('打包') is None
+    window.output.setPlainText('测试昵称\n2026/10/9\n打包-45*0.2\n计时2')
+    window.parse_text()
+    assert not window.unresolved_warnings
+    assert [record.item_code for record in window.reviewed_records()] == ['打包', None]
+    assert window.total_label.text() == '总计：39.00元'
+    window.close()

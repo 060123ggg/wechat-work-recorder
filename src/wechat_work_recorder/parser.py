@@ -2,7 +2,7 @@
 import re
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from .catalog import ItemCatalog, normalize_code
+from .catalog import ItemCatalog, NAMED_PROJECT, normalize_code
 from .employees import EmployeeDirectory
 from .models import ParseResult, WorkKind, WorkRecord
 
@@ -76,6 +76,18 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
     warnings: list[str] = []
     price_warnings: list[str] = []
     catalog = ItemCatalog()
+    project_names = sorted((code for code in catalog.codes if NAMED_PROJECT.fullmatch(code)),
+                           key=lambda code: (-len(code), code))
+    named_piece = (re.compile(
+        rf'(?<!\w)(?P<code>{"|".join(map(re.escape, project_names))})'
+        r'(?:\s*-\s*|\s+)(?P<qty>\d+(?:\.\d+)?)\s*[＊*×✘xX]\s*'
+        r'(?P<price>\d+(?:\.\d+)?)(?=\s|元|计时|工时|$|[,，;；])'
+    ) if project_names else None)
+    named_worklike = (re.compile(rf'(?<!\w)(?:{"|".join(map(re.escape, project_names))})'
+                                 r'(?=\s*[-:：]|\s+\d)') if project_names else None)
+
+    def named_match(value: str):
+        return named_piece.search(value) if named_piece else None
     seen: set[tuple] = set()
     current_date: date | None = None
     current_employee: str | None = None
@@ -105,10 +117,12 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                 price = PRICE.search(body)
                 compact_matches = list(COMPACT_PIECE.finditer(body))
                 separated_matches = list(SEPARATED_PIECE.finditer(body))
-                if len(compact_matches) + len(separated_matches) > 1:
+                named_matches = list(named_piece.finditer(body)) if named_piece else []
+                if len(compact_matches) + len(separated_matches) + len(named_matches) > 1:
                     raise ValueError("多条计件内容混在一起")
                 compact = compact_matches[0] if compact_matches else None
                 separated = separated_matches[0] if separated_matches else None
+                named = named_matches[0] if named_matches else None
                 no_price = PRICELESS_PIECE.search(body) if not compact else None
                 if code and quantity and price:
                     item_code = code.group("value")
@@ -124,6 +138,9 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     if item_code not in catalog.codes:
                         raise ValueError(f"{item_code} 未在已知完整货号库中，双分隔符含义需人工确认")
                     qty, unit_price = Decimal(separated.group("qty")), Decimal(separated.group("price"))
+                elif named:
+                    item_code = named.group("code")
+                    qty, unit_price = Decimal(named.group("qty")), Decimal(named.group("price"))
                 elif compact:
                     item_code = compact.group("code")
                     qty, unit_price = Decimal(compact.group("qty")), Decimal(compact.group("price"))
@@ -175,7 +192,8 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
         if not raw_line:
             continue
         labelled_piece = re.search(r"货号", raw_line)
-        compact_piece = SEPARATED_PIECE.search(raw_line) or COMPACT_PIECE.search(raw_line) or PRICELESS_PIECE.search(raw_line)
+        compact_piece = (SEPARATED_PIECE.search(raw_line) or COMPACT_PIECE.search(raw_line)
+                         or PRICELESS_PIECE.search(raw_line) or named_match(raw_line))
         piece_start = (labelled_piece or compact_piece).start() if (labelled_piece or compact_piece) else None
         hourly_label = HOURLY_START.search(raw_line)
         hour_start = hourly_label.start() if hourly_label else None
@@ -196,7 +214,8 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
             unknown_sender = bool(sender_hints and not matched_people and any(
                 re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line) for name in sender_hints))
             piece_marker = re.search(r"货号", line)
-            compact = SEPARATED_PIECE.search(line) or COMPACT_PIECE.search(line) or PRICELESS_PIECE.search(line)
+            compact = (SEPARATED_PIECE.search(line) or COMPACT_PIECE.search(line)
+                       or PRICELESS_PIECE.search(line) or named_match(line))
             standalone_code = STANDALONE_CODE.fullmatch(line)
             hour_marker = HOURLY_START.search(line)
             new_kind = (WorkKind.PIECE if piece_marker or compact or (standalone_code and pending_kind != WorkKind.PIECE)
@@ -205,10 +224,12 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     and len(pending) == 1 and re.search(r"(?:计时|工时)\s*[:：]?\s*$", pending[0])
                     and not re.search(r"计时|工时", line)):
                 new_kind = None
-            if pending and new_kind is None and WORKLIKE.search(line):
+            if pending and new_kind is None and (WORKLIKE.search(line) or
+                    (named_worklike and named_worklike.search(line))):
                 body = " ".join(pending)
                 complete_piece = (SEPARATED_PIECE.search(body) is not None or
                                   COMPACT_PIECE.search(body) is not None or
+                                  named_match(body) is not None or
                                   all(pattern.search(body) for pattern in (CODE, QUANTITY, PRICE)))
                 complete_hour = False
                 if pending_kind == WorkKind.HOURLY:
@@ -251,7 +272,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                 for employee in directory.employees:
                     for name in (employee.name, *employee.aliases):
                         residue = residue.replace(name, "")
-                if WORKLIKE.search(residue):
+                if WORKLIKE.search(residue) or (named_worklike and named_worklike.search(residue)):
                     warnings.append(f"第{line_number}行需人工核对：疑似记工内容无法解析；原文：{original_line}；{catalog.review_candidates(line)}")
     finish_pending()
     return ParseResult(tuple(records), tuple(warnings), tuple(price_warnings))
