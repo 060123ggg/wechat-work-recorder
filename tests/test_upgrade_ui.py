@@ -113,7 +113,7 @@ def test_standard_change_never_changes_existing_wages(ui):
 def test_multivalue_price_choices_are_explicit_and_record_only(ui,monkeypatch,tmp_path):
     _,window,_,_=ui
     p=tmp_path/'price.csv'
-    p.write_text('code,price,count,unit,month,source\n8377,.2,2,件,2026-10,测试来源\n8377,.3,5,件,2026-10,测试来源\n')
+    p.write_text('code,price,count,unit,month,source\n8377,.2,2,件,2026-10,测试来源\n8377,.3,5,件,2026-10,测试来源\n', encoding='utf-8')
     window.catalog.import_october_csv(p)
     import_body(ui,'8377 100个\n计时1')
     assert window.table.rowCount()==1 and window.unresolved_warnings

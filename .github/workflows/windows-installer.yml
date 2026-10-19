@@ -31,7 +31,12 @@ jobs:
       - name: Run all tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        shell: pwsh
+        run: |
+          python -m pytest -q --junitxml=test-results.xml
+          $testExit = $LASTEXITCODE
+          python packaging/windows/test_report.py
+          exit $testExit
       - name: Install Windows OCR and installer tools
         shell: pwsh
         run: |

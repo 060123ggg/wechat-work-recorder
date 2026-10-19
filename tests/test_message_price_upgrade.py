@@ -153,7 +153,7 @@ def test_duplicate_and_similar_messages_are_withheld_for_decision(catalog):
 
 def test_old_catalog_migration_preserves_defaults_and_local_projects(tmp_path):
     path=tmp_path/'catalog.json'
-    path.write_text('{"codes":["打包"],"defaults":{"打包":"0.2","8513-6":"1.8"}}')
+    path.write_text('{"codes":["打包"],"defaults":{"打包":"0.2","8513-6":"1.8"}}', encoding='utf-8')
     catalog=ItemCatalog(path)
     catalog.update_item('猫砂盆',D('10'),aliases=['砂盆','猫盆'])
     reopened=ItemCatalog(path)
@@ -166,7 +166,7 @@ def test_old_catalog_migration_preserves_defaults_and_local_projects(tmp_path):
 def test_import_rejects_other_months_atomically_and_never_overrides_manual_price(catalog,tmp_path):
     p=tmp_path/'prices.csv'
     def write(month):
-        p.write_text('code,price,count,unit,month,source\n8377,.3,4,件,'+month+',测试价格源\n8510,.6,2,件,'+month+',测试价格源\n8510,.55,8,件,'+month+',测试价格源\n')
+        p.write_text('code,price,count,unit,month,source\n8377,.3,4,件,'+month+',测试价格源\n8510,.6,2,件,'+month+',测试价格源\n8510,.55,8,件,'+month+',测试价格源\n', encoding='utf-8')
     write('2026-09')
     with pytest.raises(ValueError):catalog.import_october_csv(p)
     assert not catalog.path.exists()
