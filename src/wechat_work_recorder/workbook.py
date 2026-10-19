@@ -72,10 +72,12 @@ def write_mock_workbook(destination: Path, records: Sequence[WorkRecord], confir
             ws.merge_cells(start_row=first, start_column=8, end_row=last, end_column=8)
     ws.freeze_panes = 'A2'
     audit = wb.create_sheet('审核追溯')
-    audit.append(['消息序号', '原文行号', '微信群', '工作备注', '原始消息'])
+    audit.append(['消息序号', '原文行号', '微信群', '工作备注', '原始消息', '数量单位', '单价来源', '解析时标准价', '重复工作人工确认'])
     for record in ordered:
         audit.append([record.message_number, record.source_line, record.group_id,
-                      record.note or '', record.source_text])
+                      record.note or '', record.source_text, record.quantity_unit or '', record.price_source or '',
+                      str(record.standard_price_snapshot) if record.standard_price_snapshot is not None else '',
+                      record.duplicate_confirmed])
     destination.parent.mkdir(parents=True, exist_ok=True)
     output = destination.open("xb")
     try:

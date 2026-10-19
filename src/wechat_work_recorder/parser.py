@@ -1,28 +1,14 @@
 """按消息上下文解析跨行记工内容；含糊字段交由人工核对。"""
 import re
-from datetime import date
 from decimal import Decimal, InvalidOperation
-from .catalog import ItemCatalog, NAMED_PROJECT, normalize_code
+from .catalog import ItemCatalog, normalize_code, valid_catalog_code
 from .employees import EmployeeDirectory
 from .models import ParseResult, WorkKind, WorkRecord
+from .payroll import calculate_amount
 
-DATE = re.compile(r"(?P<year>\d{4})[-/年](?P<month>\d{1,2})[-/月](?P<day>\d{1,2})日?")
-CODE = re.compile(r"货号\s*[:：]?\s*(?P<value>[A-Za-z0-9][A-Za-z0-9._/-]*)")
-QUANTITY = re.compile(r"数量\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)(?=\s|件|个|单价|$)")
-PRICE = re.compile(r"单价\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)(?=\s|元|$)")
-PRICELESS_PIECE = re.compile(r"(?<![\w./-])(?P<code>\d{4}(?:-\d)?)\s+(?P<qty>\d+(?:\.\d+)?)(?=\s|件|个|$)")
-SEPARATED_PIECE = re.compile(
-    r"(?<![\w./-])(?P<code>\d{4}(?:-\d)?)(?:--|~~)"
-    r"(?P<qty>\d+(?:\.\d+)?)\s*[＊*×✘xX]\s*"
-    r"(?P<price>\d+(?:\.\d+)?)(?=\s|元|计时|工时|$|[,，;；])"
-)
-COMPACT_PIECE = re.compile(
-    r"(?<![\w./-])(?P<code>[A-Za-z0-9][A-Za-z0-9._/-]*)\s+"
-    r"(?P<qty>\d+(?:\.\d+)?)\s*[＊*×✘xX]\s*"
-    r"(?P<price>\d+(?:\.\d+)?)(?=\s|元|计时|工时|$|[,，;；])"
-)
+from .message_context import DATE, WORKLIKE
+
 STANDALONE_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
-WORKLIKE = re.compile(r"货号|数量|单价|计时|工时|计\s*\d|\d+(?:\.\d+)?\s*(?:小时|时|[＊*×✘xX])|[A-Za-z0-9][A-Za-z0-9._/-]*-\d+")
 HOURLY_START = re.compile(r"计时|工时|计(?=\s*[:：]?\s*\d)|\d+(?:\.\d+)?\s*(?:小时|时)")
 HOUR_VALUE = re.compile(
     r"^(?:计时|工时|计)?\s*[:：]?\s*(?P<hours>\d+(?:\.\d+)?)\s*"
@@ -43,7 +29,13 @@ def parse_hours(value: str) -> Decimal:
 
 
 def parse_hour_entry(value: str) -> tuple[Decimal, str | None]:
-    match = HOUR_VALUE.fullmatch(value.strip())
+    value = value.strip()
+    prefix_note = ""
+    prefix = re.match(r"^(?:计时|工时)([^\d]*)(?=\d)", value)
+    if prefix:
+        prefix_note = prefix[1].strip(" 。.：:，,;；")
+        value = "计时" + value[prefix.end():]
+    match = HOUR_VALUE.fullmatch(value)
     if not match:
         raise ValueError("无法确认工时格式")
     rate = match.group('rate')
@@ -66,213 +58,208 @@ def parse_hour_entry(value: str) -> tuple[Decimal, str | None]:
             note = note[1:-1].strip()
         if note.startswith(('小时', '时', '分钟', '分', '半', '多')):
             raise ValueError('工时后的文字可能是未解析的时间，请人工确认')
+    note = "；".join(x for x in (prefix_note, note) if x) or None
     return result, note
 
 
+# 完整项目优先匹配；单横杠紧挨数字时，只有明确数量单位才解除边界歧义。
+NUMBER = r'\d+(?:\.\d+)?'
+UNIT = r'个|件|捆|套|只|箱|袋|组|包'
+MULTIPLY = r'[＊*×✘xX]'
+TAIL = rf'(?P<qty>{NUMBER})\s*(?P<unit>{UNIT})?\s*(?:{MULTIPLY}\s*(?P<price>{NUMBER})\s*元?)?'
+
+
+def piece_fields(body: str, catalog: ItemCatalog, inherited: str | None = None):
+    """返回明确项目、数量、消息价格与单位；不依照价格改写货号。"""
+    body = normalize_code(body).strip(' ，,；;。')
+    patterns = [
+        # 8510-216个：单位明确了数量边界，不截为 8510-2 / 16。
+        rf'(?P<code>\d{{4}})-(?P<qty>{NUMBER})\s*(?P<unit>{UNIT})\s*(?:{MULTIPLY}\s*(?P<price>{NUMBER})\s*元?)?',
+        rf'(?P<code>\d{{4}}(?:-\d)?)(?:--|~~){TAIL}',
+        rf'(?P<code>[A-Za-z0-9][A-Za-z0-9._/-]*)\s+{TAIL}',
+        rf'(?P<code>[\u4e00-\u9fff]{{2,24}})\s*[-:：]?\s*{TAIL}',
+    ]
+    for pattern in patterns:
+        if match := re.fullmatch(pattern, body):
+            code = catalog.canonical(match['code'])
+            if match['code'].isdigit() and not re.fullmatch(r'\d{4}', match['code']):
+                raise ValueError('货号格式异常，请核对完整货号')
+            if '--' in body or '~~' in body:
+                if code not in catalog.codes:
+                    raise ValueError(f'{code} 未在已知完整货号库中，双分隔符含义需人工确认')
+            return code, Decimal(match['qty']), (Decimal(match['price']) if match['price'] else None), match['unit'] or '件', False
+    if match := re.fullmatch(rf'(?P<qty>{NUMBER})\s*(?P<unit>{UNIT})\s*(?:{MULTIPLY}\s*(?P<price>{NUMBER})\s*元?)?', body):
+        if not inherited:
+            raise ValueError('项目继承不确定：同一消息内没有最近的明确项目')
+        return inherited, Decimal(match['qty']), Decimal(match['price']) if match['price'] else None, match['unit'], True
+    raise ValueError('货号、数量边界或单价不完整，需人工确认')
+
+
+def _clean_body(raw, block, groups):
+    from .message_context import TIME
+    value = DATE.sub('', raw)
+    value = TIME.sub('', value).strip(' ：:，,')
+    value = re.sub(r'^(?:发送人|微信昵称|微信发送时间|正文)[：:]\s*', '', value)
+    if block.nickname:
+        value = re.sub(rf'^{re.escape(block.nickname)}(?:[：:]|\s+|$)', '', value).strip()
+    for group in groups:
+        value = re.sub(rf'(?<!\w){re.escape(group)}(?!\w)', '', value).strip()
+    if value in groups:
+        return ''
+    return value
+
+
 def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
-                   sender_hints: set[str] | None = None) -> ParseResult:
+                   sender_hints: set[str] | None = None, *, catalog: ItemCatalog | None = None,
+                   identity_overrides: dict | None = None, date_overrides: dict | None = None) -> ParseResult:
+    from dataclasses import replace
+    from difflib import SequenceMatcher
+    from .message_context import split_messages, date_for_line, PARTIAL_DATE, WORKLIKE as NEW_WORKLIKE
     directory.require_group(group_id)
-    records: list[WorkRecord] = []
-    warnings: list[str] = []
-    price_warnings: list[str] = []
-    catalog = ItemCatalog()
-    project_names = sorted((code for code in catalog.codes if NAMED_PROJECT.fullmatch(code)),
-                           key=lambda code: (-len(code), code))
-    named_piece = (re.compile(
-        rf'(?<!\w)(?P<code>{"|".join(map(re.escape, project_names))})'
-        r'(?:\s*-\s*|\s+)(?P<qty>\d+(?:\.\d+)?)\s*[＊*×✘xX]\s*'
-        r'(?P<price>\d+(?:\.\d+)?)(?=\s|元|计时|工时|$|[,，;；])'
-    ) if project_names else None)
-    named_worklike = (re.compile(rf'(?<!\w)(?:{"|".join(map(re.escape, project_names))})'
-                                 r'(?=\s*[-:：]|\s+\d)') if project_names else None)
-
-    def named_match(value: str):
-        return named_piece.search(value) if named_piece else None
-    seen: set[tuple] = set()
-    current_date: date | None = None
-    current_employee: str | None = None
-    pending: list[str] = []
-    pending_original: list[str] = []
-    pending_kind: WorkKind | None = None
-    pending_line = 0
-    pending_date: date | None = None
-    pending_employee: str | None = None
-
-    def finish_pending() -> None:
-        nonlocal pending, pending_original, pending_kind
-        if not pending:
-            return
-        body = " ".join(pending)
-        original_body = " ".join(pending_original)
-        try:
-            if pending_date is None:
-                raise ValueError("缺少有效工作日期")
-            if pending_employee is None:
-                raise ValueError("员工未绑定或未确认")
-            if pending_kind == WorkKind.PIECE:
-                if len(re.findall(r"\d+(?:\.\d+)?\s*[＊*×✘xX]\s*\d+(?:\.\d+)?", body)) > 1:
-                    raise ValueError("多条疑似计件内容混在一起")
-                code = CODE.search(body)
-                quantity = QUANTITY.search(body)
-                price = PRICE.search(body)
-                compact_matches = list(COMPACT_PIECE.finditer(body))
-                separated_matches = list(SEPARATED_PIECE.finditer(body))
-                named_matches = list(named_piece.finditer(body)) if named_piece else []
-                if len(compact_matches) + len(separated_matches) + len(named_matches) > 1:
-                    raise ValueError("多条计件内容混在一起")
-                compact = compact_matches[0] if compact_matches else None
-                separated = separated_matches[0] if separated_matches else None
-                named = named_matches[0] if named_matches else None
-                no_price = PRICELESS_PIECE.search(body) if not compact else None
-                if code and quantity and price:
-                    item_code = code.group("value")
-                    qty, unit_price = Decimal(quantity.group("value")), Decimal(price.group("value"))
-                elif code and quantity:
-                    item_code = normalize_code(code.group("value"))
-                    qty = Decimal(quantity.group("value"))
-                    unit_price = catalog.default_price(item_code)
-                    if unit_price is None:
-                        raise ValueError(f"{item_code} 未确认现行默认单价，请人工填写单价")
-                elif separated:
-                    item_code = separated.group("code")
-                    if item_code not in catalog.codes:
-                        raise ValueError(f"{item_code} 未在已知完整货号库中，双分隔符含义需人工确认")
-                    qty, unit_price = Decimal(separated.group("qty")), Decimal(separated.group("price"))
-                elif named:
-                    item_code = named.group("code")
-                    qty, unit_price = Decimal(named.group("qty")), Decimal(named.group("price"))
-                elif compact:
-                    item_code = compact.group("code")
-                    qty, unit_price = Decimal(compact.group("qty")), Decimal(compact.group("price"))
-                    if code and code.group("value") != item_code:
-                        raise ValueError("货号存在冲突")
-                elif no_price:
-                    item_code = no_price.group("code")
-                    qty = Decimal(no_price.group("qty"))
-                    unit_price = catalog.default_price(item_code)
-                    if unit_price is None:
-                        raise ValueError(f"{item_code} 未确认现行默认单价，请人工填写单价")
-                else:
-                    raise ValueError("货号、数量或单价不完整")
-                item_code = normalize_code(item_code)
-                if not re.fullmatch(r"\d{4}(?:-\d)?", item_code) and item_code.isdigit():
-                    raise ValueError("货号格式异常，请核对完整货号")
-                if DATE.fullmatch(item_code) or qty <= 0 or unit_price < 0:
-                    raise ValueError("货号、数量或单价无效")
-                confirmed = catalog.default_price(item_code)
-                if confirmed is not None and unit_price != confirmed:
-                    price_warnings.append(f"第{pending_line}行 {item_code} 消息单价{unit_price}元，与已确认默认价{confirmed}元不同；按消息单价计算，保存前须确认")
-                record = WorkRecord(pending_employee, pending_date, WorkKind.PIECE, group_id,
-                                    original_body, item_code, qty, unit_price, source_line=pending_line)
-            else:
-                marker = HOURLY_START.search(body)
-                if marker is None:
-                    raise ValueError("缺少计时内容")
-                hours, note = parse_hour_entry(body[marker.start():])
-                record = WorkRecord(pending_employee, pending_date, WorkKind.HOURLY, group_id,
-                                    original_body, hours=hours, note=note, source_line=pending_line)
-            key = record_key(record)
-            if key in seen:
-                raise ValueError("疑似重复记录，请人工确认")
-            seen.add(key)
-            records.append(record)
-        except (ValueError, InvalidOperation) as exc:
-            if pending_employee is None:
-                warnings.append(f"第{pending_line}行需人工核对：员工未绑定或未确认；原文：{original_body}")
-            else:
-                warnings.append(f"第{pending_line}行需人工核对：{exc}；原文：{original_body}；{catalog.review_candidates(body)}")
-        pending = []
-        pending_original = []
-        pending_kind = None
-
-    # 截图 OCR 通常换行；也接受用户粘贴的反斜杠分隔示例。
-    for line_number, raw_line in enumerate(text.replace("\\", "\n").splitlines(), 1):
-        raw_original = raw_line.strip()
-        raw_line = normalize_code(raw_line.strip())
-        if not raw_line:
-            continue
-        labelled_piece = re.search(r"货号", raw_line)
-        compact_piece = (SEPARATED_PIECE.search(raw_line) or COMPACT_PIECE.search(raw_line)
-                         or PRICELESS_PIECE.search(raw_line) or named_match(raw_line))
-        piece_start = (labelled_piece or compact_piece).start() if (labelled_piece or compact_piece) else None
-        hourly_label = HOURLY_START.search(raw_line)
-        hour_start = hourly_label.start() if hourly_label else None
-        if piece_start is not None and hour_start is not None:
-            split_at = max(piece_start, hour_start)
-            segments = (raw_line[:split_at].strip(), raw_line[split_at:].strip())
-            original_segments = (raw_original[:split_at].strip(), raw_original[split_at:].strip())
-        else:
-            segments = (raw_line,)
-            original_segments = (raw_original,)
-        for line, original_line in zip(segments, original_segments):
-            if not line:
+    catalog = catalog or ItemCatalog()
+    names = [name for e in directory.employees for name in (e.name, *e.aliases)]
+    blocks = split_messages(text, list(directory.group_ids), names)
+    records, proposals, warnings, price_warnings = [], [], [], []
+    seen, previous_messages = set(), []
+    for block in blocks:
+        employee = directory.resolve(block.nickname) if block.nickname else None
+        employee_id = (identity_overrides or {}).get(block.number) or (employee.employee_id if employee else None)
+        inherited = None
+        entries = []
+        lines = block.raw_text.splitlines()
+        index = 0
+        while index < len(lines):
+            raw = lines[index].strip()
+            body = _clean_body(raw, block, directory.group_ids)
+            line = block.start_line + index
+            index += 1
+            if not body or PARTIAL_DATE.fullmatch(body):
                 continue
-            date_match = DATE.search(line)
-            matched_people = [employee for employee in directory.employees
-                              if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line)
-                                     for name in (employee.name, *employee.aliases))]
-            unknown_sender = bool(sender_hints and not matched_people and any(
-                re.search(rf"(?<!\w){re.escape(name)}(?!\w)", line) for name in sender_hints))
-            piece_marker = re.search(r"货号", line)
-            compact = (SEPARATED_PIECE.search(line) or COMPACT_PIECE.search(line)
-                       or PRICELESS_PIECE.search(line) or named_match(line))
-            standalone_code = STANDALONE_CODE.fullmatch(line)
-            hour_marker = HOURLY_START.search(line)
-            new_kind = (WorkKind.PIECE if piece_marker or compact or (standalone_code and pending_kind != WorkKind.PIECE)
-                        else WorkKind.HOURLY if hour_marker else None)
-            if (new_kind == WorkKind.HOURLY and pending_kind == WorkKind.HOURLY
-                    and len(pending) == 1 and re.search(r"(?:计时|工时)\s*[:：]?\s*$", pending[0])
-                    and not re.search(r"计时|工时", line)):
-                new_kind = None
-            if pending and new_kind is None and (WORKLIKE.search(line) or
-                    (named_worklike and named_worklike.search(line))):
-                body = " ".join(pending)
-                complete_piece = (SEPARATED_PIECE.search(body) is not None or
-                                  COMPACT_PIECE.search(body) is not None or
-                                  named_match(body) is not None or
-                                  all(pattern.search(body) for pattern in (CODE, QUANTITY, PRICE)))
-                complete_hour = False
-                if pending_kind == WorkKind.HOURLY:
-                    marker = HOURLY_START.search(body)
-                    try:
-                        if marker:
-                            parse_hours(body[marker.start():])
-                            complete_hour = True
-                    except ValueError:
-                        pass
-                if complete_piece or complete_hour:
-                    finish_pending()
-            if pending and (new_kind is not None or date_match or matched_people or unknown_sender):
-                finish_pending()
-            if date_match:
-                try:
-                    current_date = date(*(int(date_match.group(key)) for key in ("year", "month", "day")))
-                except ValueError:
-                    current_date = None
-                    warnings.append(f"第{line_number}行需人工核对：日期无效")
-            if matched_people:
-                current_employee = matched_people[0].employee_id if len(matched_people) == 1 else None
-                if len(matched_people) != 1:
-                    warnings.append(f"第{line_number}行需人工核对：员工不唯一")
-            elif unknown_sender:
-                current_employee = None
-                warnings.append(f"第{line_number}行需人工核对：员工未绑定（微信昵称尚未确认）")
-            if new_kind is not None:
-                pending = [line]
-                pending_original = [original_line]
-                pending_kind = new_kind
-                pending_line = line_number
-                pending_date = current_date
-                pending_employee = current_employee
-            elif pending:
-                pending.append(line)
-                pending_original.append(original_line)
+            if body.startswith('货号') or STANDALONE_CODE.fullmatch(body) or re.fullmatch(r'\d{4}', body) or body in ('计时', '工时'):
+                while index < len(lines):
+                    following = lines[index].strip()
+                    if (re.fullmatch(rf'(?:数量|单价)\s*[:：]?\s*(?:{NUMBER})?\s*(?:{UNIT}|元)?\s*', following)
+                            or (re.fullmatch(NUMBER, following) and (not PARTIAL_DATE.fullmatch(following) or body.endswith(('数量','单价'))))
+                            or following in ('数量', '单价')
+                            or (body.rstrip('：:') == '货号' and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*', following))
+                            or ((STANDALONE_CODE.fullmatch(body) or re.fullmatch(r'\d{4}', body)) and re.fullmatch(TAIL, following))
+                            or (body in ('计时', '工时') and re.match(r'\d', following))):
+                        body += ' ' + following
+                        raw += '\n' + following
+                        index += 1
+                    else:
+                        break
+            if index < len(lines) and re.fullmatch(rf'\s*{MULTIPLY}\s*{NUMBER}\s*元?\s*', lines[index]):
+                body += ' ' + lines[index].strip()
+                raw += '\n' + lines[index].strip()
+                index += 1
+            # 同行混合计件/计时按标记分割，计时内部的 *15 不参与计件判断。
+            marker = HOURLY_START.search(body)
+            if marker and marker.start() > 0 and NEW_WORKLIKE.search(body[:marker.start()]):
+                entries.extend([(line, body[:marker.start()].strip(), raw),
+                                (line, body[marker.start():], raw)])
+            elif marker and marker.start() == 0:
+                # 支持“计时3.5 8513-7 70*1.7”。
+                next_piece = re.search(r'\s+(?=\d{4}(?:-\d)?(?:\s|--|~~))', body)
+                if next_piece:
+                    entries.extend([(line, body[:next_piece.start()], raw),
+                                    (line, body[next_piece.end():], raw)])
+                else:
+                    entries.append((line, body, raw))
             else:
-                residue = DATE.sub("", line)
-                for employee in directory.employees:
-                    for name in (employee.name, *employee.aliases):
-                        residue = residue.replace(name, "")
-                if WORKLIKE.search(residue) or (named_worklike and named_worklike.search(residue)):
-                    warnings.append(f"第{line_number}行需人工核对：疑似记工内容无法解析；原文：{original_line}；{catalog.review_candidates(line)}")
-    finish_pending()
-    return ParseResult(tuple(records), tuple(warnings), tuple(price_warnings))
+                entries.append((line, body, raw))
+        start_records = len(records)
+        block_work = []
+        for line, body, original in entries:
+            identified = False
+            body = normalize_code(body)
+            if not (NEW_WORKLIKE.search(body) or re.match(r'^\d{4}', body) or
+                    any(name in body for name in catalog.recognition_names)):
+                # 日期/群名/闲聊没有工作标记，不生成工资记录。
+                continue
+            try:
+                if employee_id is None:
+                    raise ValueError('员工未绑定或发送人待确认；请人工选择正式员工')
+                work_date = (date_overrides or {}).get(block.number) or date_for_line(block, line)
+                if work_date is None:
+                    raise ValueError('缺少有效工作日期')
+                if HOURLY_START.match(body):
+                    inherited = None
+                    hours, note = parse_hour_entry(body)
+                    identified = True
+                    record = WorkRecord(employee_id, work_date, WorkKind.HOURLY, group_id,
+                                        original, hours=hours, note=note, source_line=line, message_number=block.number,
+                                        quantity_unit='小时', price_source='固定时薪15元', standard_price_snapshot=Decimal('15'))
+                elif body.startswith('货号'):
+                    labelled = re.fullmatch(
+                        rf'货号\s*[:：]?\s*(?P<code>[A-Za-z0-9][A-Za-z0-9._/-]*)\s+'
+                        rf'数量\s*[:：]?\s*(?P<qty>{NUMBER})\s*(?:{UNIT})?\s*'
+                        rf'(?:单价\s*[:：]?\s*(?P<price>{NUMBER})\s*元?)?', body)
+                    if labelled:
+                        code = normalize_code(labelled['code'])
+                        qty = Decimal(labelled['qty'])
+                        price = Decimal(labelled['price']) if labelled['price'] else catalog.default_price(code)
+                    else:
+                        code, qty, price, _, _ = piece_fields(re.sub(r'^货号\s*[:：]?\s*', '', body), catalog)
+                        price = price if price is not None else catalog.default_price(code)
+                    if price is None:
+                        raise ValueError(f'{code} 当前标准价未确认，请人工填写单价')
+                    record = WorkRecord(employee_id, work_date, WorkKind.PIECE, group_id, original,
+                                        code, qty, price, source_line=line, message_number=block.number,
+                                        quantity_unit='件', price_source='消息单价', standard_price_snapshot=catalog.default_price(code))
+                    inherited = code
+                    identified = True
+                    if valid_catalog_code(code) and code not in catalog.codes:
+                        proposals.append(record)
+                        raise ValueError(f'新增项目 {code} 尚未确认，请新增并确认标准单价')
+                else:
+                    code, qty, price, unit, was_inherited = piece_fields(body, catalog, inherited)
+                    inherited = code
+                    identified = True
+                    record = WorkRecord(employee_id, work_date, WorkKind.PIECE, group_id, original,
+                                        code, qty, price if price is not None else catalog.default_price(code),
+                                        note=f'沿用本消息项目：{code}' if was_inherited else None,
+                                        source_line=line, message_number=block.number, quantity_unit=unit,
+                                        price_source='消息单价' if price is not None else '当前标准价',
+                                        standard_price_snapshot=catalog.default_price(code))
+                    if code not in catalog.codes:
+                        proposals.append(record)
+                        raise ValueError(f'新增项目 {code} 尚未确认，请新增并确认标准单价')
+                    if record.unit_price is None:
+                        proposals.append(record)
+                        raise ValueError(f'{code} 当前标准价尚未确认，请选择或填写单价')
+                calculate = calculate_amount
+                calculate(record)
+                key = record_key(record)
+                if key in seen:
+                    proposals.append(record)
+                    raise ValueError('疑似重复记录，请人工确认是否为独立工作，不会自动计入第二条')
+                seen.add(key)
+                records.append(record)
+                block_work.append(body)
+                if record.kind == WorkKind.PIECE:
+                    current = catalog.default_price(record.item_code)
+                    if current is not None and current != record.unit_price:
+                        price_warnings.append(f'第{line}行需人工核对：{record.item_code} 当前标准价（默认价）{current}元；本次单价{record.unit_price}元；数量{record.quantity}；金额{calculate(record):.2f}元；原文：{original}')
+                    elif current is None and catalog.price_history(record.item_code):
+                        price_warnings.append(f'第{line}行需人工核对：{record.item_code} 当前标准价未确认（多个历史价格），本次单价{record.unit_price}元；数量{record.quantity}；金额{calculate(record):.2f}元；原文：{original}')
+            except (ValueError, InvalidOperation) as exc:
+                if not identified:
+                    inherited = None
+                reason = str(exc)
+                suffix = '' if '员工未绑定' in reason else f'；{catalog.review_candidates(body)}'
+                warnings.append(f'第{line}行需人工核对：{reason}；原文：{original}{suffix}')
+        # 高度相似消息只做提醒；保留草稿供人工决定，禁止直接重复计入。
+        current_records = records[start_records:]
+        if current_records:
+            fingerprint = ' '.join(block_work)
+            same = next((old for old in previous_messages if old[0] == employee_id
+                         and old[1] == current_records[0].work_date
+                         and SequenceMatcher(None, old[2], fingerprint).ratio() >= .92), None)
+            if same:
+                for record in current_records:
+                    proposals.append(record)
+                    warnings.append(f'第{record.source_line}行需人工核对：疑似重复消息，与第{same[3]}条高度相似，请确认是否独立工作；原文：{record.source_text}')
+                del records[start_records:]
+            previous_messages.append((employee_id, current_records[0].work_date, fingerprint, block.number))
+    return ParseResult(tuple(records), tuple(warnings), tuple(price_warnings), tuple(proposals))

@@ -31,6 +31,10 @@ class WorkRecord:
     note: str | None = None
     source_line: int | None = None
     message_number: int | None = None
+    duplicate_confirmed: bool = False
+    quantity_unit: str | None = None
+    price_source: str | None = None
+    standard_price_snapshot: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -38,3 +42,4 @@ class ParseResult:
     records: tuple[WorkRecord, ...]
     warnings: tuple[str, ...]
     price_warnings: tuple[str, ...] = ()
+    proposals: tuple[WorkRecord, ...] = ()

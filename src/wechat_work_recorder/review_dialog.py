@@ -36,7 +36,8 @@ def suggestions(original: str, candidates: list[str]) -> tuple[str, str, str, st
 class ReviewDialog(QDialog):
     def __init__(self, original: str, number: int | None, employee: str | None,
                  work_date: str | None, candidates: list[str], on_confirm, parent=None,
-                 confirmed_defaults: dict[str, Decimal] | None = None):
+                 confirmed_defaults: dict[str, Decimal] | None = None,
+                 employees=(), reason: str = '', price_options=()):
         super().__init__(parent)
         self.setWindowTitle('人工审核')
         self.setMinimumWidth(520)
@@ -44,6 +45,21 @@ class ReviewDialog(QDialog):
         self.confirmed_defaults = confirmed_defaults or {}
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f'第{number or 1}条消息｜员工：{employee or "未绑定员工"}｜日期：{work_date or "缺少有效日期"}'))
+        context = QFormLayout()
+        self.employee_choice = QComboBox()
+        self.employee_choice.addItem('发送人待确认：请选择正式员工', None)
+        for person in employees:
+            self.employee_choice.addItem(f'{person.employee_id}  {person.name}', person.employee_id)
+            if person.name == employee:
+                self.employee_choice.setCurrentIndex(self.employee_choice.count() - 1)
+        self.work_date = QLineEdit(work_date or '')
+        context.addRow('正式员工', self.employee_choice)
+        context.addRow('工作日期 YYYY/M/D', self.work_date)
+        layout.addLayout(context)
+        if reason:
+            issue = QLabel(reason.split('；原文：')[0])
+            issue.setWordWrap(True)
+            layout.addWidget(issue)
         layout.addWidget(QLabel('微信原文'))
         source = QLabel(original)
         source.setWordWrap(True)
@@ -64,6 +80,14 @@ class ReviewDialog(QDialog):
         piece_layout.addRow('完整货号 / 工作项目', self.code)
         piece_layout.addRow('数量', self.quantity)
         piece_layout.addRow('单价（元）', self.price)
+        self.price_options = QComboBox()
+        self.price_options.addItem('请选择本次单价（不改变标准价）', '')
+        for option in sorted(set(price_options), key=Decimal):
+            self.price_options.addItem(str(option), str(option))
+        self.price_options.currentIndexChanged.connect(
+            lambda index: self.price.setText(self.price_options.itemData(index)) if index else None)
+        if price_options:
+            piece_layout.addRow('待确认单价候选', self.price_options)
         layout.addWidget(self.piece_panel)
         self.hour_panel = QWidget()
         hour_layout = QFormLayout(self.hour_panel)
@@ -86,6 +110,16 @@ class ReviewDialog(QDialog):
         for field in (self.quantity, self.price, self.hours):
             field.textChanged.connect(self.refresh_amount)
         self.refresh_amount()
+        if hours:
+            self.kind.setCurrentIndex(1)
+
+    def prefill_record(self, record):
+        self.code.setCurrentText(record.item_code or '')
+        self.quantity.setText(str(record.quantity) if record.quantity is not None else '')
+        self.price.setText(str(record.unit_price) if record.unit_price is not None else '')
+        self.hours.setText(str(record.hours) if record.hours is not None else '')
+        self.note.setText(record.note or '')
+        self.kind.setCurrentIndex(1 if record.kind == WorkKind.HOURLY else 0)
 
     def refresh_amount(self):
         hourly = self.kind.currentIndex() == 1
@@ -109,14 +143,14 @@ class ReviewDialog(QDialog):
     def values(self):
         if self.kind.currentIndex() == 1:
             hours = Decimal(self.hours.text().strip())
-            if hours <= 0 or hours > 24:
+            if not hours.is_finite() or hours <= 0 or hours > 24:
                 raise ValueError('工时须大于0且不超过24小时')
             return WorkKind.HOURLY, '', '', '', str(hours), self.note.text().strip()
         code = normalize_code(self.code.currentText())
         if not code:
             raise ValueError('请确认完整货号或工作项目')
         quantity, price = Decimal(self.quantity.text().strip()), Decimal(self.price.text().strip())
-        if quantity <= 0 or price < 0:
+        if not quantity.is_finite() or not price.is_finite() or quantity <= 0 or price < 0:
             raise ValueError('数量须大于0，单价不能小于0')
         return WorkKind.PIECE, code, str(quantity), str(price), '', ''
 

@@ -7,7 +7,11 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from PIL import Image
-from .catalog import ItemCatalog, normalize_code
+from . import __version__
+from .catalog import ItemCatalog, normalize_code, valid_catalog_code
+from .catalog_dialog import CatalogDialog, ProjectDialog
+from .message_context import date_for_line
+from .import_history import ImportHistory
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
@@ -29,6 +33,16 @@ from .review_dialog import ReviewDialog
 from .settings import directory_from_settings, load_settings, save_settings
 from .workbook import write_mock_workbook
 from .wps_clipboard import to_wps_segments
+
+def unconfirmed_duplicates(records):
+    seen = set()
+    for record in records:
+        key = record_key(record)
+        if key in seen and not record.duplicate_confirmed:
+            return True
+        seen.add(key)
+    return False
+
 
 HEADERS = ["日期", "员工编号", "姓名", "货号/项目", "数量/工时", "单价", "单项工资", "当日合计工资"]
 
@@ -56,9 +70,17 @@ class MainWindow(QMainWindow):
         self.display_records: list[WorkRecord] = []
         self.review_overrides: dict[int, tuple[str, str, WorkRecord]] = {}
         self.message_blocks = []
+        self.message_employees = {}
+        self.message_dates = {}
+        self.parse_proposals = []
+        self.new_project_prompts = set()
+        self.import_history = ImportHistory()
+        self.history_source = None
+        self.price_approvals = set()
+        self.confirmed_snapshot = None
         self.warning_entries: list[tuple[str, int | None, int | None]] = []
         self.needs_parse = False
-        self.setWindowTitle("微信记工助手")
+        self.setWindowTitle(f"微信记工助手 {__version__}")
         self.resize(1050, 720)
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -138,6 +160,7 @@ class MainWindow(QMainWindow):
         self.total_label = QLabel("总计：0.00元")
         layout.addWidget(self.total_label)
         self.setCentralWidget(panel)
+        self.group_combo.currentTextChanged.connect(self.on_group_changed)
         QApplication.instance().installEventFilter(self)
 
     def closeEvent(self, event):
@@ -157,6 +180,28 @@ class MainWindow(QMainWindow):
     def on_text_changed(self):
         self.needs_parse = True
         self.review_overrides.clear()
+        self.message_employees.clear()
+        self.message_dates.clear()
+        self.new_project_prompts.clear()
+        self.history_source = None
+        self.price_approvals.clear()
+        self.confirmed_snapshot = None
+
+    def on_group_changed(self, *_):
+        self.on_text_changed()
+        self.wps_copy_batch = None
+        self.wps_copy_step = 0
+        self.display_records = []
+        self.table.setRowCount(0)
+        self.message_blocks = []
+        self.message_list.clear()
+        self.review_list.clear()
+        self.review_notes.clear()
+        self.parse_proposals = []
+        self.unresolved_warnings = []
+        self.price_warnings = []
+        self.refresh_total()
+        self.statusBar().showMessage('微信群已改变，请重新解析并核对员工身份')
 
     def update_guide(self):
         if self.roster:
@@ -185,6 +230,7 @@ class MainWindow(QMainWindow):
         self.unresolved_warnings = []
         self.review_overrides.clear()
         self.needs_parse = True
+        self.on_text_changed()
         self.update_guide()
         self.statusBar().showMessage('17名正式员工已保存到本机；请核对微信群和昵称绑定')
         return True
@@ -225,6 +271,7 @@ class MainWindow(QMainWindow):
         if not self.ensure_roster():
             return
         BindingDialog(self.bindings, self.groups, self).exec()
+        self.on_text_changed()
         self.table.setRowCount(0)
         self.display_records = []
         self.review_overrides.clear()
@@ -232,8 +279,12 @@ class MainWindow(QMainWindow):
 
     def manage_catalog(self):
         action, ok = QInputDialog.getItem(self, "管理货号", "选择操作：",
-                                         ["新增货号或工作项目/维护现行价", "更正本机新增货号或项目"], 0, False)
+                                         ["新增货号或工作项目/维护现行价", "更正本机新增货号或项目", "完整价格资料库/别名/导入十月价格"], 0, False)
         if not ok:
+            return
+        if action == "完整价格资料库/别名/导入十月价格":
+            CatalogDialog(self.catalog, self).exec()
+            self.statusBar().showMessage("本机资料库已更新；现有工资不变，新导入文字使用新标准价")
             return
         if action == "更正本机新增货号或项目":
             if not self.catalog.additions:
@@ -259,7 +310,7 @@ class MainWindow(QMainWindow):
             code = normalize_code(code)
             if code not in self.catalog.codes:
                 self.catalog.add_code(code)
-            historical = self.catalog.historical_prices(code) or "无历史价格"
+            historical = "；".join(f"{h['price']}元" for h in self.catalog.price_history(code)) or "尚未导入十月价格"
             current = self.catalog.default_price(code)
             price, ok = QInputDialog.getText(self, "已确认现行价",
                 f"{code}；历史参考：{historical}\n现行默认价（留空仅保存货号）：",
@@ -274,73 +325,102 @@ class MainWindow(QMainWindow):
     def review_ambiguous_line(self):
         selected_item = self.review_list.currentItem()
         if selected_item is not None:
-            entry = self.warning_entries[self.review_list.row(selected_item)]
-            selected = entry[0]
+            selected = self.warning_entries[self.review_list.row(selected_item)][0]
         else:
-            choices = [warning for warning in self.unresolved_warnings if '；原文：' in warning]
-            if not choices:
-                QMessageBox.information(self, '待核对内容', '当前没有可人工审核的记工行')
-                return
-            selected = choices[0]
-        line_match = re.match(r'第(\d+)行', selected)
+            selected = next((warning for warning in self.unresolved_warnings + self.price_warnings if '；原文：' in warning), None)
+        line_match = re.match(r'第(\d+)行', selected or '')
         if not line_match or '；原文：' not in selected:
-            QMessageBox.warning(self, '无法核对', '该项目没有可定位的原文行')
+            QMessageBox.warning(self, '无法核对', '请选择带原文的工作项目；员工问题也可通过昵称绑定管理处理')
             return
-        line_number = int(line_match.group(1))
+        line_number = int(line_match[1])
         source_lines = self.output.toPlainText().splitlines()
         if not 1 <= line_number <= len(source_lines):
             QMessageBox.warning(self, '无法核对', '原文行号已变化，请重新解析')
             return
         original = source_lines[line_number - 1]
-        candidates = self.catalog.candidates(original)
-        group = self.group_combo.currentText()
         block = next((b for b in self.message_blocks if b.start_line <= line_number <= b.end_line), None)
+        group = self.group_combo.currentText()
         nickname = block.nickname if block else None
-        employee_id = self.bindings.resolve(group, nickname) if group and nickname else None
-        employee = self.employee_by_id.get(employee_id) if employee_id else None
-        dates = list(DATE.finditer('\n'.join(source_lines[:line_number])))
-        work_date = None
-        if dates:
-            last = dates[-1]
-            try:
-                work_date = date(int(last['year']), int(last['month']), int(last['day']))
-            except ValueError:
-                pass
+        employee_id = self.bindings.resolve(group, nickname) if group and nickname else self.message_employees.get(block.number if block else 0)
+        employee = self.employee_by_id.get(employee_id)
+        try:
+            work_date = self.message_dates.get(block.number) or date_for_line(block, line_number) if block else None
+        except ValueError:
+            work_date = None
+        candidate_record = next((record for record in self.parse_proposals + self.display_records
+                                 if record.source_line == line_number), None)
+        candidates = self.catalog.candidates(original)
+        if candidate_record and candidate_record.item_code:
+            candidates = list(dict.fromkeys([candidate_record.item_code, *candidates]))
 
         def confirm(values):
             kind, code, quantity, price, hours, note = values
-            if re.search(r'\d+(?:\.\d+)?\s*[＊*×✘xX]\s*\d', original) and re.search(r'计时|工时|计\s*\d|\d+(?:\.\d+)?\s*小时', original):
-                return '原文同一行包含计件和计时；请先拆成两行再解析，避免漏记'
-            if not group:
-                return '请先选择微信群'
-            if employee is None:
-                return '员工未绑定；请先确认微信昵称与正式员工的绑定'
-            if work_date is None:
-                return '缺少有效工作日期'
-            if kind == WorkKind.PIECE and not (re.fullmatch(r'\d{4}(?:-\d)?', code) or code.strip()):
-                return '请确认完整货号或工作项目'
-            record = WorkRecord(employee.employee_id, work_date, kind, group, original,
+            if re.search(r'\d{4}.*[＊*×✘xX]', original) and re.search(r'计时|工时|计\s*\d', original):
+                return '原文同一行包含多个工作项目；请先拆成两行再解析，避免审核时漏记'
+            if not group or block is None:
+                return '请先选择微信群并重新解析消息'
+            chosen = self.employee_by_id.get(dialog.employee_choice.currentData())
+            if chosen is None:
+                return '员工未绑定或发送人待确认；请在本窗口选择正式员工'
+            try:
+                confirmed_date = date(*map(int, re.split(r'[-/]', dialog.work_date.text().strip())))
+            except (ValueError, TypeError):
+                return '请填写有效工作日期 YYYY/M/D'
+            if kind == WorkKind.PIECE:
+                code = self.catalog.canonical(code)
+                if code not in self.catalog.codes:
+                    answer = QMessageBox.question(self, '确认新增项目',
+                        f'将 {code} 新增到本机资料库，并将 {price} 元确认为标准价。继续吗？')
+                    if answer != QMessageBox.StandardButton.Yes:
+                        return '新增项目尚未确认'
+                    try:
+                        self.catalog.update_item(code, Decimal(price))
+                    except (ValueError, InvalidOperation) as exc:
+                        return str(exc)
+            record = WorkRecord(chosen.employee_id, confirmed_date, kind, group, original,
                 item_code=code if kind == WorkKind.PIECE else None,
-                quantity=Decimal(quantity) if quantity else None,
-                unit_price=Decimal(price) if price else None,
-                hours=Decimal(hours) if hours else None, note=note or None,
-                source_line=line_number, message_number=message_for_line(self.message_blocks, line_number))
-            if any(record_key(other) == record_key(record) for other in self.reviewed_records()):
-                return '疑似重复记录，请核对已有工资明细'
+                quantity=Decimal(quantity) if quantity else None, unit_price=Decimal(price) if price else None,
+                hours=Decimal(hours) if hours else None,
+                note=(note or (candidate_record.note if candidate_record else None)),
+                source_line=line_number, message_number=block.number,
+                quantity_unit=(candidate_record.quantity_unit if candidate_record else None),
+                price_source="人工确认", standard_price_snapshot=self.catalog.default_price(code) if kind == WorkKind.PIECE else Decimal("15"))
+            calculate_amount(record)
+            duplicates = [other for other in self.reviewed_records()
+                          if other.source_line != line_number and record_key(other) == record_key(record)]
+            if duplicates or '疑似重复' in selected:
+                if '疑似重复' not in selected:
+                    return '疑似重复记录，请核对已有工资明细'
+                if QMessageBox.question(self, '确认疑似重复记录',
+                    '该项与已有工作完全相同或高度相似。确实是另一项独立工作并需再次计薪吗？') != QMessageBox.StandardButton.Yes:
+                    return '疑似重复记录尚未确认，未加入工资表'
+                record = replace(record, duplicate_confirmed=True)
+            if nickname:
+                try:
+                    self.bindings.bind(group, nickname, chosen.employee_id)
+                except BindingConflict as exc:
+                    return str(exc)
+            self.message_employees[block.number] = chosen.employee_id
+            if work_date is None:
+                self.message_dates[block.number] = confirmed_date
             self.review_overrides[line_number] = (original, group, record)
             self.parse_text()
             if any(warning.startswith(f'第{line_number}行') for warning in self.unresolved_warnings):
                 self.review_overrides.pop(line_number, None)
                 self.parse_text()
-                return '本行仍需核对，人工确认未生效'
+                return '本行仍需核对，人工确认未生效，请查看具体原因'
             return None
 
-        dialog = ReviewDialog(original, message_for_line(self.message_blocks, line_number),
+        dialog = ReviewDialog(original, block.number if block else None,
                               employee.name if employee else None,
                               work_date.strftime('%Y/%m/%d') if work_date else None,
                               candidates, confirm, self,
-                              {code: self.catalog.default_price(code) for code in candidates
-                               if self.catalog.default_price(code) is not None})
+                              {code: self.catalog.default_price(code) for code in candidates if self.catalog.default_price(code) is not None},
+                              employees=self.roster, reason=selected,
+                              price_options=[h['price'] for h in self.catalog.price_history(candidate_record.item_code)]
+                              if candidate_record and candidate_record.unit_price is None else ())
+        if candidate_record:
+            dialog.prefill_record(candidate_record)
         dialog.exec()
 
     def import_clipboard_text(self):
@@ -421,8 +501,29 @@ class MainWindow(QMainWindow):
         self.message_blocks = split_messages(source, self.groups)
         identity_warnings = self.confirm_unknown_nicknames(group, source) if self.roster else []
         directory = self.resolved_directory(group) if self.roster else directory_from_settings(self.employees, self.groups)
+        self.message_blocks = split_messages(source, self.groups,
+            [name for employee in directory.employees for name in (employee.name, *employee.aliases)])
         candidates = set(nickname_candidates(source, self.groups)) if self.roster else None
-        result = parse_messages(source, directory, group, sender_hints=candidates)
+        if self.confirmed_snapshot and self.confirmed_snapshot[:2] == (source, group):
+            self.unresolved_warnings = []
+            self.price_warnings = []
+            self.render_records(list(self.confirmed_snapshot[2]))
+            self.refresh_review_display()
+            self.needs_parse = False
+            self.statusBar().showMessage('已保留本批已确认工资；新标准价只用于新导入的文字')
+            return
+        result = parse_messages(source, directory, group, sender_hints=candidates, catalog=self.catalog,
+                                identity_overrides=self.message_employees, date_overrides=self.message_dates)
+        for proposal in result.proposals:
+            code = proposal.item_code
+            prompt_key = (source, group, code)
+            if code and code not in self.catalog.codes and prompt_key not in self.new_project_prompts:
+                self.new_project_prompts.add(prompt_key)
+                ProjectDialog(self.catalog, code, proposal.unit_price, self,
+                              original=proposal.source_text, new=True).exec()
+        result = parse_messages(source, directory, group, sender_hints=candidates, catalog=self.catalog,
+                                identity_overrides=self.message_employees, date_overrides=self.message_dates)
+        self.parse_proposals = list(result.proposals)
         records = [replace(record, message_number=message_for_line(self.message_blocks, record.source_line))
                    for record in result.records]
         warnings = list(dict.fromkeys(identity_warnings + list(result.warnings)))
@@ -433,18 +534,26 @@ class MainWindow(QMainWindow):
                 continue
             warnings = [warning for warning in warnings
                         if not (warning.startswith(f'第{line}行') and '；原文：' in warning)]
-            if any(record_key(other) == record_key(record) for other in records):
+            records = [other for other in records if other.source_line != line]
+            if not record.duplicate_confirmed and any(record_key(other) == record_key(record) for other in records):
                 warnings.append(f'第{line}行需人工核对：人工确认记录与其他记录重复；原文：{original}')
             else:
                 records.append(record)
+        if self.history_source != (source, group):
+            retained = []
+            for record in records:
+                history = self.import_history.find(record)
+                if history and not record.duplicate_confirmed:
+                    self.parse_proposals.append(record)
+                    warnings.append(f'第{record.source_line}行需人工核对：疑似重复记录，{history}；请确认是否独立工作；原文：{record.source_text}')
+                else:
+                    retained.append(record)
+            records = retained
         self.unresolved_warnings = warnings
-        self.price_warnings = list(result.price_warnings)
-        for line, (_, override_group, record) in self.review_overrides.items():
-            if override_group == group:
-                default = self.catalog.default_price(record.item_code or '')
-                if default is not None and record.unit_price != default:
-                    self.price_warnings.append(
-                        f'第{line}行 {record.item_code} 消息单价{record.unit_price}元，与已确认默认价{default}元不同；按消息单价计算，保存前须确认')
+        self.price_warnings = [warning for warning in result.price_warnings
+                               if not any(warning.startswith(f'第{line}行') for line in self.review_overrides)
+                               and not any(warning.startswith(f'第{r.source_line}行') and
+                                           (r.source_line, record_key(r)) in self.price_approvals for r in records)]
         self.needs_parse = False
         self.render_records(records)
         self.refresh_review_display()
@@ -472,9 +581,9 @@ class MainWindow(QMainWindow):
         pending = {number for _, _, number in self.warning_entries}
         self.message_list.clear()
         for block in self.message_blocks:
-            employee_id = self.bindings.resolve(self.group_combo.currentText(), block.nickname) if block.nickname else None
+            employee_id = self.bindings.resolve(self.group_combo.currentText(), block.nickname) if block.nickname else self.message_employees.get(block.number)
             employee = self.employee_by_id.get(employee_id) if employee_id else None
-            identity = f'{block.nickname}（{employee.name}）' if employee else f'{block.nickname or "未知昵称"}（未绑定员工）'
+            identity = f'{block.nickname or "人工确认发送人"}（{employee.name}）' if employee else f'{block.nickname or "发送人待确认"}（未绑定员工）'
             state = '待核对' if block.number in pending else '已核对'
             item = QListWidgetItem(f'第{block.number}条｜{identity}｜{state}')
             item.setData(Qt.ItemDataRole.UserRole, block.number)
@@ -564,12 +673,14 @@ class MainWindow(QMainWindow):
         if hourly:
             if value(5) != '15.00':
                 raise ValueError(f'第{row + 1}行计时时薪必须为15.00元')
-            return WorkRecord(employee_id, work_date, WorkKind.HOURLY, base.group_id,
-                base.source_text, hours=Decimal(value(4)), note=base.note,
-                source_line=base.source_line, message_number=base.message_number)
-        return WorkRecord(employee_id, work_date, WorkKind.PIECE, base.group_id,
-            base.source_text, value(3), Decimal(value(4)), Decimal(value(5)),
-            note=base.note, source_line=base.source_line, message_number=base.message_number)
+            record = replace(base, employee_id=employee_id, work_date=work_date, kind=WorkKind.HOURLY,
+                             item_code=None, quantity=None, unit_price=None, hours=Decimal(value(4)))
+        else:
+            record = replace(base, employee_id=employee_id, work_date=work_date, kind=WorkKind.PIECE,
+                             item_code=value(3), quantity=Decimal(value(4)), unit_price=Decimal(value(5)), hours=None)
+        if record_key(record) != record_key(base):
+            record = replace(record, duplicate_confirmed=False, price_source='表格人工修改')
+        return record
 
     def recompute_table(self, *_):
         self.table.blockSignals(True)
@@ -641,12 +752,16 @@ class MainWindow(QMainWindow):
                 raise ValueError('缺少已确认的正式员工名册，不能复制到 WPS')
             records = self.reviewed_records()
             keys = [record_key(record) for record in records]
-            if len(keys) != len(set(keys)):
+            if unconfirmed_duplicates(records):
                 raise ValueError('存在重复记录，请先核对')
             already_copied = [key in self.copied_record_keys for key in keys]
-            if any(already_copied) and not all(already_copied):
+            if (any(already_copied) and not all(already_copied)
+                    and any(copied and not record.duplicate_confirmed for copied, record in zip(already_copied, records))):
                 raise ValueError('本批记录有部分已复制；请核对目标行，避免重复粘贴')
             names = {employee.employee_id: employee.name for employee in self.roster}
+            if any(record.kind == WorkKind.PIECE and valid_catalog_code(record.item_code or '')
+                   and record.item_code not in self.catalog.codes for record in records):
+                raise ValueError('存在未确认的新增项目，请先加入本机价格资料库')
             segments = to_wps_segments(records, names)
         except (ValueError, InvalidOperation) as exc:
             QMessageBox.warning(self, '复制失败', str(exc))
@@ -656,11 +771,12 @@ class MainWindow(QMainWindow):
                 '这些记录本次运行已复制过。仅用于核对或测试时才重新复制；请先检查 WPS 目标行，避免重复粘贴。继续吗？')
             if again != QMessageBox.StandardButton.Yes:
                 return
-        differences = [f'{record.item_code} 填写价{record.unit_price}元与已确认默认价{default}元不同'
+        differences = [f'{record.item_code} 当前标准价{default}元，填写价{record.unit_price}元，数量{record.quantity}，本次金额{calculate_amount(record):.2f}元'
                        for record in records if record.kind == WorkKind.PIECE
                        if (default := self.catalog.default_price(record.item_code or '')) is not None
                        and record.unit_price != default]
-        detail = ('\n单价差异：' + '；'.join(differences)) if differences else ''
+        differences += self.price_warnings
+        detail = ('\n单价差异或标准价待确认：' + '；'.join(differences)) if differences else ''
         answer = QMessageBox.question(self, '确认复制到 WPS',
             f'请核对这 {len(records)} 条记录的员工、日期、项目、数量、单价和工资。{detail}\n'
             '将在同一批行分三步粘贴 B:D、F、H:I，不复制 E、G、J、K。'
@@ -668,6 +784,10 @@ class MainWindow(QMainWindow):
             '若 J 列缺少公式，请先在副本中补齐并核对；软件不会代填。确认开始吗？')
         if answer != QMessageBox.StandardButton.Yes:
             return
+        self.price_approvals.update((r.source_line, record_key(r)) for r in records)
+        self.price_warnings = []
+        self.refresh_review_display()
+        self.statusBar().showMessage(f'识别 {len(records)} 条；需人工核对 0 项')
         self.wps_copy_batch = (tuple(keys), segments)
         self.wps_copy_step = 1
         QApplication.clipboard().setText(segments['B:D'])
@@ -702,6 +822,9 @@ class MainWindow(QMainWindow):
                 '先确认 WPS 目标 F 列已设为文本，再在同一首行的 F 列粘贴货号/计时；然后点“第3步：复制 H:I”。')
         else:
             self.copied_record_keys.update(keys)
+            self.import_history.remember(self.reviewed_records())
+            self.history_source = (self.output.toPlainText(), self.group_combo.currentText())
+            self.confirmed_snapshot = (*self.history_source, tuple(self.reviewed_records()))
             self.wps_copy_batch = None
             self.wps_copy_step = 0
             QMessageBox.information(self, '第3步：H:I',
@@ -712,9 +835,11 @@ class MainWindow(QMainWindow):
             if self.needs_parse:
                 raise ValueError("OCR 原文已修改，请重新解析后核对表格")
             if self.unresolved_warnings:
-                raise ValueError("仍有未解析行；请修改 OCR 原文并重新解析，或核对后在原文中移除无关行")
+                raise ValueError("仍有未解析行或疑似重复；请在人工审核中逐项确认后再保存")
             records = self.reviewed_records()
             for record in records:
+                if record.kind == WorkKind.PIECE and valid_catalog_code(record.item_code or '') and record.item_code not in self.catalog.codes:
+                    raise ValueError('存在未确认的新增项目，请先加入本机价格资料库')
                 default = self.catalog.default_price(record.item_code or "")
                 if record.kind == WorkKind.PIECE and default is not None and record.unit_price != default:
                     detail = f"{record.item_code} 单价{record.unit_price}元，与已确认默认价{default}元不同；按填写价计算"
@@ -723,7 +848,7 @@ class MainWindow(QMainWindow):
             if not records:
                 raise ValueError("没有可保存的记录")
             keys = [record_key(record) for record in records]
-            if len(keys) != len(set(keys)) or any(key in self.saved_record_keys for key in keys):
+            if unconfirmed_duplicates(records) or any(record_key(r) in self.saved_record_keys and not r.duplicate_confirmed for r in records):
                 raise ValueError("存在重复记录或本次运行中已保存的记录，请人工核对")
         except (ValueError, InvalidOperation) as exc:
             QMessageBox.warning(self, "核对失败", str(exc))
@@ -739,6 +864,9 @@ class MainWindow(QMainWindow):
             write_mock_workbook(Path(filename), records, confirmed=True,
                                 employee_names={employee.employee_id: employee.name for employee in self.roster})
             self.saved_record_keys.update(record_key(record) for record in records)
+            self.import_history.remember(records, output="模拟账本")
+            self.history_source = (self.output.toPlainText(), self.group_combo.currentText())
+            self.confirmed_snapshot = (*self.history_source, tuple(self.reviewed_records()))
             self.statusBar().showMessage(f"已保存模拟账本：{filename}", 10000)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "保存失败", str(exc))

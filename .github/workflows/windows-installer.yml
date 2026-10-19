@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - feat/windows-installer
+      - feat/message-price-upgrade
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'packaging/**'
+      - 'pyproject.toml'
+      - '.github/workflows/windows-installer.yml'
   workflow_dispatch:
 
 permissions:
@@ -51,6 +58,9 @@ jobs:
           }
           if (-not (Test-Path 'dist/WeChatWorkRecorder/_internal/wechat_work_recorder/historical_items.csv')) {
             throw 'Historical catalog missing from application bundle'
+          }
+          if (-not (Test-Path 'dist/WeChatWorkRecorder/_internal/wechat_work_recorder/october_prices.csv')) {
+            throw 'October price source missing from application bundle'
           }
       - name: Smoke-test packaged application
         shell: pwsh

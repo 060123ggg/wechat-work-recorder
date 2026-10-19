@@ -8,7 +8,7 @@ a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],
     pathex=[os.path.join(SPECPATH, "..", "..", "src")],
     binaries=[],
-    datas=collect_data_files("wechat_work_recorder", includes=["historical_items.csv"]),
+    datas=collect_data_files("wechat_work_recorder", includes=["*.csv"]),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
