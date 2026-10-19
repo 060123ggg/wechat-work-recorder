@@ -60,9 +60,15 @@ jobs:
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'wechat-work-recorder-smoke'
           $env:WECHAT_SMOKE_RESULT = Join-Path $env:RUNNER_TEMP 'wechat-packaged-smoke.txt'
           New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
-          & 'dist/WeChatWorkRecorder/WeChatWorkRecorder.exe' --packaging-smoke-test
-          if (Test-Path $env:WECHAT_SMOKE_RESULT) { Get-Content $env:WECHAT_SMOKE_RESULT }
-          if ($LASTEXITCODE -ne 0) { throw "Packaged application smoke test failed: $LASTEXITCODE" }
+          $app = (Resolve-Path 'dist/WeChatWorkRecorder/WeChatWorkRecorder.exe').Path
+          $process = Start-Process -FilePath $app -ArgumentList '--packaging-smoke-test' -PassThru
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Packaged application did not exit within 60 seconds' }
+          if (Test-Path $env:WECHAT_SMOKE_RESULT) {
+            $detail = Get-Content $env:WECHAT_SMOKE_RESULT -Raw
+            Write-Host $detail
+            Add-Content $env:GITHUB_STEP_SUMMARY "Packaged app: $detail"
+          }
+          if ($process.ExitCode -ne 0) { throw "Packaged application smoke test failed: $($process.ExitCode)" }
       - name: Compile per-user installer
         shell: pwsh
         run: |
@@ -85,9 +91,14 @@ jobs:
           $env:WECHAT_SMOKE_RESULT = Join-Path $env:RUNNER_TEMP 'wechat-installed-smoke.txt'
           $result = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$testDir" -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Installer failed: $($result.ExitCode)" }
-          & (Join-Path $testDir 'WeChatWorkRecorder.exe') --packaging-smoke-test
-          if (Test-Path $env:WECHAT_SMOKE_RESULT) { Get-Content $env:WECHAT_SMOKE_RESULT }
-          if ($LASTEXITCODE -ne 0) { throw "Installed application smoke test failed: $LASTEXITCODE" }
+          $process = Start-Process -FilePath (Join-Path $testDir 'WeChatWorkRecorder.exe') -ArgumentList '--packaging-smoke-test' -PassThru
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Installed application did not exit within 60 seconds' }
+          if (Test-Path $env:WECHAT_SMOKE_RESULT) {
+            $detail = Get-Content $env:WECHAT_SMOKE_RESULT -Raw
+            Write-Host $detail
+            Add-Content $env:GITHUB_STEP_SUMMARY "Installed app: $detail"
+          }
+          if ($process.ExitCode -ne 0) { throw "Installed application smoke test failed: $($process.ExitCode)" }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
