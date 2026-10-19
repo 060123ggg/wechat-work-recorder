@@ -1,4 +1,5 @@
 """截图粘贴、OCR、规则解析、人工核对与模拟账本窗口。"""
+import os
 import sys
 import re
 from dataclasses import replace
@@ -754,10 +755,18 @@ def main() -> int:
     if smoke_test:
         # Windows CI 用实际打包后的 exe 验证界面、货号库和中文 OCR 均可加载。
         import pytesseract
-        languages = set(pytesseract.get_languages(config=""))
-        ready = (window.catalog.codes and {"chi_sim", "eng"} <= languages
-                 and window.copy_wps_button.text() and window.copy_wps_f_button.text()
-                 and window.copy_wps_hi_button.text())
+        try:
+            window.ocr.recognize(Image.new("RGB", (80, 40), "white"))
+            languages = set(pytesseract.get_languages(config=""))
+            ready = (window.catalog.codes and {"chi_sim", "eng"} <= languages
+                     and window.copy_wps_button.text() and window.copy_wps_f_button.text()
+                     and window.copy_wps_hi_button.text())
+            detail = f"OCR languages: {sorted(languages)}; bundled command: {window.ocr.executable}"
+        except Exception as exc:
+            ready = False
+            detail = f"Packaging smoke test error: {exc!r}"
+        if report := os.environ.get("WECHAT_SMOKE_RESULT"):
+            Path(report).write_text(detail, encoding="utf-8")
         window.close()
         return 0 if ready else 2
     window.show()
