@@ -19,6 +19,7 @@ from .parser import parse_messages, record_key
 from .payroll import calculate_amount
 from .settings import directory_from_settings, load_settings, save_settings
 from .workbook import write_mock_workbook
+from .wps_clipboard import to_wps_segments
 
 HEADERS = ["员工", "日期", "群", "类型(piece/hourly)", "完整货号", "数量", "单价", "工时", "工资"]
 
@@ -36,6 +37,9 @@ class MainWindow(QMainWindow):
         self.employee_by_id = {employee.employee_id: employee for employee in self.roster}
         self.unresolved_warnings = []
         self.saved_record_keys: set[tuple] = set()
+        self.copied_record_keys: set[tuple] = set()
+        self.wps_copy_batch: tuple[tuple[tuple, ...], dict[str, str]] | None = None
+        self.wps_copy_step = 0
         self.needs_parse = False
         self.setWindowTitle("微信记工助手")
         self.resize(1050, 720)
@@ -66,6 +70,18 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self.save_mock)
         controls.addWidget(self.save_button)
         layout.addLayout(controls)
+        wps_controls = QHBoxLayout()
+        wps_controls.addWidget(QLabel("WPS 分列复制（同一首行依次粘贴）："))
+        self.copy_wps_button = QPushButton("复制 WPS 第1步：B:D")
+        self.copy_wps_button.clicked.connect(self.copy_to_wps)
+        wps_controls.addWidget(self.copy_wps_button)
+        self.copy_wps_f_button = QPushButton("第2步：复制 F")
+        self.copy_wps_f_button.clicked.connect(self.copy_wps_f)
+        wps_controls.addWidget(self.copy_wps_f_button)
+        self.copy_wps_hi_button = QPushButton("第3步：复制 H:I")
+        self.copy_wps_hi_button.clicked.connect(self.copy_wps_hi)
+        wps_controls.addWidget(self.copy_wps_hi_button)
+        layout.addLayout(wps_controls)
         self.output = QPlainTextEdit()
         self.output.textChanged.connect(self.on_text_changed)
         self.output.setPlaceholderText("在此粘贴聊天文字，或粘贴截图自动 OCR……")
@@ -273,6 +289,65 @@ class MainWindow(QMainWindow):
                 raise ValueError(f"第{row + 1}行工资须为按规则计算的 {amount} 元")
             records.append(record)
         return records
+
+    def copy_to_wps(self):
+        try:
+            if self.needs_parse or self.unresolved_warnings:
+                raise ValueError("存在未重新解析或待核对的内容，暂不能复制")
+            if not self.roster:
+                raise ValueError("缺少已确认的正式员工名册，不能复制到 WPS")
+            records = self.reviewed_records()
+            keys = [record_key(record) for record in records]
+            if len(keys) != len(set(keys)) or any(key in self.copied_record_keys for key in keys):
+                raise ValueError("存在重复记录或本次运行中已复制的记录，请先核对")
+            names = {employee.employee_id: employee.name for employee in self.roster}
+            segments = to_wps_segments(records, names)
+        except (ValueError, InvalidOperation) as exc:
+            QMessageBox.warning(self, "复制失败", str(exc))
+            return
+        answer = QMessageBox.question(self, "确认复制到 WPS",
+            f"请先核对这 {len(records)} 条记录的员工、日期、数量、单价和工资。"
+            "本次将分三步复制 B:D、F、H:I，并在同一批行分别粘贴；不会复制 E、G、J、K。"
+            "请先在 WPS 账本副本确认目标行的 J 列工资公式完整、K 列合并与小计正确。"
+            "如果 J 列缺少公式，请先在副本中补齐并核对，软件不会代填工资。"
+            "三次粘贴必须从同一行开始，目标区域不得含合并单元格。确认开始吗？")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.wps_copy_batch = (tuple(keys), segments)
+        self.wps_copy_step = 1
+        QApplication.clipboard().setText(segments["B:D"])
+        QMessageBox.information(self, "第1步：B:D", "请在 WPS 副本目标首行的 B 列粘贴日期、工号、姓名；再回到软件点击“第2步：复制 F”。")
+
+    def copy_wps_f(self):
+        self.copy_wps_segment("F", 1)
+
+    def copy_wps_hi(self):
+        self.copy_wps_segment("H:I", 2)
+
+    def copy_wps_segment(self, column: str, expected_step: int):
+        if self.wps_copy_batch is None or self.wps_copy_step != expected_step:
+            QMessageBox.warning(self, "复制顺序错误", "请先完成前一步的复制和粘贴")
+            return
+        try:
+            if self.needs_parse or self.unresolved_warnings:
+                raise ValueError("原文已改变或存在待核对内容，请重新开始复制")
+            keys = tuple(record_key(record) for record in self.reviewed_records())
+            if keys != self.wps_copy_batch[0]:
+                raise ValueError("工资明细已改变，请重新开始复制并核对目标行")
+        except (ValueError, InvalidOperation) as exc:
+            self.wps_copy_batch = None
+            self.wps_copy_step = 0
+            QMessageBox.warning(self, "复制失败", str(exc))
+            return
+        QApplication.clipboard().setText(self.wps_copy_batch[1][column])
+        self.wps_copy_step += 1
+        if column == "F":
+            QMessageBox.information(self, "第2步：F", "请在同一批目标行的 F 列粘贴货号/计时；再回到软件点击“第3步：复制 H:I”。")
+        else:
+            self.copied_record_keys.update(keys)
+            self.wps_copy_batch = None
+            self.wps_copy_step = 0
+            QMessageBox.information(self, "第3步：H:I", "请在同一批目标行的 H 列粘贴数量/工时和单价，并检查 J 列原公式计算结果及 K 列布局。")
 
     def save_mock(self):
         try:
