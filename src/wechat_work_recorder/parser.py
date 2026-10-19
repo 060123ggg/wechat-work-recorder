@@ -87,7 +87,7 @@ def piece_fields(body: str, catalog: ItemCatalog, inherited: str | None = None):
             if '--' in body or '~~' in body:
                 if code not in catalog.codes:
                     raise ValueError(f'{code} 未在已知完整货号库中，双分隔符含义需人工确认')
-            return code, Decimal(match['qty']), (Decimal(match['price']) if match['price'] else None), match['unit'] or '件', False
+            return code, Decimal(match['qty']), (Decimal(match['price']) if match['price'] else None), match['unit'] or catalog.items.get(code, {}).get('unit', '件'), False
     if match := re.fullmatch(rf'(?P<qty>{NUMBER})\s*(?P<unit>{UNIT})\s*(?:{MULTIPLY}\s*(?P<price>{NUMBER})\s*元?)?', body):
         if not inherited:
             raise ValueError('项目继承不确定：同一消息内没有最近的明确项目')
@@ -118,7 +118,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
     directory.require_group(group_id)
     catalog = catalog or ItemCatalog()
     names = [name for e in directory.employees for name in (e.name, *e.aliases)]
-    blocks = split_messages(text, list(directory.group_ids), names)
+    blocks = split_messages(text, list(directory.group_ids), names, catalog.recognition_names)
     records, proposals, warnings, price_warnings = [], [], [], []
     seen, previous_messages = set(), []
     for block in blocks:
@@ -198,17 +198,20 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     if labelled:
                         code = normalize_code(labelled['code'])
                         qty = Decimal(labelled['qty'])
-                        price = Decimal(labelled['price']) if labelled['price'] else catalog.default_price(code)
+                        message_price = Decimal(labelled['price']) if labelled['price'] else None
                     else:
-                        code, qty, price, _, _ = piece_fields(re.sub(r'^货号\s*[:：]?\s*', '', body), catalog)
-                        price = price if price is not None else catalog.default_price(code)
-                    if price is None:
-                        raise ValueError(f'{code} 当前标准价未确认，请人工填写单价')
+                        code, qty, message_price, _, _ = piece_fields(re.sub(r'^货号\s*[:：]?\s*', '', body), catalog)
+                    price = message_price if message_price is not None else catalog.default_price(code)
                     record = WorkRecord(employee_id, work_date, WorkKind.PIECE, group_id, original,
                                         code, qty, price, source_line=line, message_number=block.number,
-                                        quantity_unit='件', price_source='消息单价', standard_price_snapshot=catalog.default_price(code))
+                                        quantity_unit=catalog.items.get(code, {}).get('unit', '件'),
+                                        price_source='消息单价' if message_price is not None else '当前标准价',
+                                        standard_price_snapshot=catalog.default_price(code))
                     inherited = code
                     identified = True
+                    if price is None:
+                        proposals.append(record)
+                        raise ValueError(f'{code} 当前标准价未确认，请人工填写单价')
                     if valid_catalog_code(code) and code not in catalog.codes:
                         proposals.append(record)
                         raise ValueError(f'新增项目 {code} 尚未确认，请新增并确认标准单价')

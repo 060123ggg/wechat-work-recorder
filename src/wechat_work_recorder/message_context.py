@@ -31,8 +31,10 @@ def _date_only(value):
     return bool(DATE.fullmatch(value.strip(' ：:')) or PARTIAL_DATE.fullmatch(value.strip(' ：:')))
 
 
-def _sender(lines, index, groups, known):
+def _sender(lines, index, groups, known, work_names):
     value = lines[index].strip()
+    if any(value == name or re.match(rf'^{re.escape(name)}\s*[-:：]?\s*\d', value) for name in work_names):
+        return None
     if not value or value in groups or value in FIELDS or _date_only(value) or re.fullmatch(r"\d+(?:\.\d+)?", value):
         return None
     explicit = re.fullmatch(r'(?:发送人|微信昵称)[：:]\s*(.+)', value)
@@ -59,19 +61,19 @@ def _sender(lines, index, groups, known):
     next_line = next((line.strip() for line in lines[index + 1:] if line.strip()), '')
     previous_line = next((line.strip() for line in reversed(lines[:index]) if line.strip()), '')
     if len(value) <= 80 and ((DATE.search(next_line) and TIME.search(next_line))
-                            or (DATE.search(previous_line) and TIME.search(previous_line))):
+                            or (re.search(r'\s', value) and DATE.search(previous_line) and TIME.search(previous_line))):
         return value
     if value in known or (NICKNAME.fullmatch(value) and (DATE.search(next_line) or WORKLIKE.search(next_line))):
         return value.rstrip('：:')
     return None
 
 
-def split_messages(text: str, groups: list[str], known_names=()) -> list[MessageBlock]:
+def split_messages(text: str, groups: list[str], known_names=(), work_names=()) -> list[MessageBlock]:
     lines = text.replace('\\', '\n').splitlines()
     if not lines:
         return []
     senders = [(i, nick) for i in range(len(lines))
-               if (nick := _sender(lines, i, groups, set(known_names)))]
+               if (nick := _sender(lines, i, groups, set(known_names), work_names))]
     if not senders:
         sent = None
         for value in [line for line in lines if line.strip()][:3]:

@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
                               {code: self.catalog.default_price(code) for code in candidates if self.catalog.default_price(code) is not None},
                               employees=self.roster, reason=selected,
                               price_options=[h['price'] for h in self.catalog.price_history(candidate_record.item_code)]
-                              if candidate_record and candidate_record.unit_price is None else ())
+                              if candidate_record and candidate_record.unit_price is None else (), catalog=self.catalog)
         if candidate_record:
             dialog.prefill_record(candidate_record)
         dialog.exec()
@@ -502,7 +502,8 @@ class MainWindow(QMainWindow):
         identity_warnings = self.confirm_unknown_nicknames(group, source) if self.roster else []
         directory = self.resolved_directory(group) if self.roster else directory_from_settings(self.employees, self.groups)
         self.message_blocks = split_messages(source, self.groups,
-            [name for employee in directory.employees for name in (employee.name, *employee.aliases)])
+            [name for employee in directory.employees for name in (employee.name, *employee.aliases)],
+            self.catalog.recognition_names)
         candidates = set(nickname_candidates(source, self.groups)) if self.roster else None
         if self.confirmed_snapshot and self.confirmed_snapshot[:2] == (source, group):
             self.unresolved_warnings = []

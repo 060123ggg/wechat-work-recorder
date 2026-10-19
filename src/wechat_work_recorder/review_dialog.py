@@ -9,10 +9,10 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
 from .catalog import normalize_code
 from .models import WorkKind
 from .payroll import HOURLY_RATE
-from .parser import HOURLY_START, parse_hour_entry
+from .parser import HOURLY_START, parse_hour_entry, piece_fields
 
 
-def suggestions(original: str, candidates: list[str]) -> tuple[str, str, str, str, str]:
+def suggestions(original: str, candidates: list[str], catalog=None) -> tuple[str, str, str, str, str]:
     """Return a cautious code, quantity, price, hours, note preview."""
     code = candidates[0] if len(candidates) == 1 else ''
     quantity = price = hours = note = ''
@@ -23,6 +23,13 @@ def suggestions(original: str, candidates: list[str]) -> tuple[str, str, str, st
         prefix = original[:pair.start(1)]
         if code and normalize_code(prefix).removeprefix(code).strip() not in ('', '-', '--', '~~'):
             quantity = ''
+    if catalog is not None:
+        try:
+            parsed_code, qty, parsed_price, _, _ = piece_fields(original, catalog)
+            code, quantity = parsed_code, str(qty)
+            price = str(parsed_price) if parsed_price is not None else ''
+        except ValueError:
+            pass
     marker = HOURLY_START.search(original)
     if marker:
         try:
@@ -37,7 +44,7 @@ class ReviewDialog(QDialog):
     def __init__(self, original: str, number: int | None, employee: str | None,
                  work_date: str | None, candidates: list[str], on_confirm, parent=None,
                  confirmed_defaults: dict[str, Decimal] | None = None,
-                 employees=(), reason: str = '', price_options=()):
+                 employees=(), reason: str = '', price_options=(), catalog=None):
         super().__init__(parent)
         self.setWindowTitle('人工审核')
         self.setMinimumWidth(520)
@@ -68,7 +75,7 @@ class ReviewDialog(QDialog):
         self.kind = QComboBox()
         self.kind.addItems(['计件', '计时'])
         layout.addWidget(self.kind)
-        code, quantity, price, hours, note = suggestions(original, candidates)
+        code, quantity, price, hours, note = suggestions(original, candidates, catalog)
         self.piece_panel = QWidget()
         piece_layout = QFormLayout(self.piece_panel)
         self.code = QComboBox()

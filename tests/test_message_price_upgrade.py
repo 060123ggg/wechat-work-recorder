@@ -245,3 +245,12 @@ def test_unknown_spaced_sender_with_timestamp_does_not_inherit_employee(catalog)
     result=parse('8510 2个*0.55\n测试 陌生昵称\n2026年10月18日 20:00\n计时3',catalog)
     assert len(result.records)==1 and result.records[0].employee_id=='E01'
     assert '员工未绑定' in result.warnings[0]
+
+
+def test_labelled_default_price_provenance(catalog):
+    catalog.update_item('打包',D('.2'),unit='捆')
+    catalog.set_default('8510',D('.55'))
+    result=parse('货号8510 数量154个',catalog)
+    assert result.records[0].price_source=='当前标准价'
+    assert result.records[0].unit_price==D('.55')
+    assert parse('打包20',catalog).records[0].quantity_unit=='捆'

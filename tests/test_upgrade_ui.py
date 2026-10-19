@@ -321,3 +321,17 @@ def test_local_output_history_keeps_original_and_price_provenance(ui):
     assert row[0]=='WPS剪贴板'
     assert data['source_text']=='8377 100个' and data['source_line']==3
     assert data['standard_price_snapshot']=='0.3' and data['price_source']=='当前标准价'
+
+
+def test_unresolved_identity_does_not_lose_unit_quantity_price_prefill(ui,monkeypatch):
+    _,window,_,_=ui
+    import_body(ui,'8510 235个*0.55',header='2026年10月18日 19:40')
+    window.review_list.setCurrentRow(0)
+    def choose(dialog):
+        assert dialog.code.currentText()=='8510'
+        assert dialog.quantity.text()=='235' and dialog.price.text()=='0.55'
+        dialog.employee_choice.setCurrentIndex(1)
+        dialog.confirm()
+    monkeypatch.setattr(ReviewDialog,'exec',choose)
+    window.review_ambiguous_line()
+    assert window.total_label.text()=='总计：129.25元' and not window.unresolved_warnings
