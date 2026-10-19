@@ -19,6 +19,7 @@ from .parser import parse_messages, record_key
 from .payroll import calculate_amount
 from .settings import directory_from_settings, load_settings, save_settings
 from .workbook import write_mock_workbook
+from .wps_clipboard import to_wps_tsv
 
 HEADERS = ["员工", "日期", "群", "类型(piece/hourly)", "完整货号", "数量", "单价", "工时", "工资"]
 
@@ -65,6 +66,9 @@ class MainWindow(QMainWindow):
         self.save_button = QPushButton("确认并保存模拟账本")
         self.save_button.clicked.connect(self.save_mock)
         controls.addWidget(self.save_button)
+        self.copy_wps_button = QPushButton("复制到 WPS（B:J）")
+        self.copy_wps_button.clicked.connect(self.copy_to_wps)
+        controls.addWidget(self.copy_wps_button)
         layout.addLayout(controls)
         self.output = QPlainTextEdit()
         self.output.textChanged.connect(self.on_text_changed)
@@ -273,6 +277,24 @@ class MainWindow(QMainWindow):
                 raise ValueError(f"第{row + 1}行工资须为按规则计算的 {amount} 元")
             records.append(record)
         return records
+
+    def copy_to_wps(self):
+        try:
+            if self.needs_parse or self.unresolved_warnings:
+                raise ValueError("存在未重新解析或待核对的内容，暂不能复制")
+            records = self.reviewed_records()
+            keys = [record_key(record) for record in records]
+            if len(keys) != len(set(keys)):
+                raise ValueError("存在重复记录，请先核对")
+            names = {employee.employee_id: employee.name for employee in self.roster}
+            if not self.roster:
+                names = {str(i + 1): name for i, name in enumerate(self.employees)}
+            data = to_wps_tsv(records, names)
+        except (ValueError, InvalidOperation) as exc:
+            QMessageBox.warning(self, "复制失败", str(exc))
+            return
+        QApplication.clipboard().setText(data)
+        QMessageBox.information(self, "已复制", f"已复制 {len(records)} 条记录。请在 WPS 对应月份空白行的 B 列单元格粘贴。\\n粘贴前请确认目标区域为空，且不包含合并单元格；不会自动写入 K 列小计。")
 
     def save_mock(self):
         try:
