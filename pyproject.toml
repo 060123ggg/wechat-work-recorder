@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wechat-work-recorder"
-version = "0.2.0"
+version = "0.2.1"
 description = "微信记工助手：截图识别和工资核对桌面应用"
 readme = "README.md"
 requires-python = ">=3.10"

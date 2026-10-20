@@ -190,6 +190,20 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     record = WorkRecord(employee_id, work_date, WorkKind.HOURLY, group_id,
                                         original, hours=hours, note=note, source_line=line, message_number=block.number,
                                         quantity_unit='小时', price_source='固定时薪15元', standard_price_snapshot=Decimal('15'))
+                elif re.fullmatch(rf'{NUMBER}\s*{MULTIPLY}\s*15(?:\.0+)?', body):
+                    # A bare "3.5×15" is never auto-paid. A matching hourly item
+                    # supplies a review draft only, not proof that it is hourly.
+                    inherited = None
+                    hours, note = parse_hour_entry(body)
+                    record = WorkRecord(employee_id, work_date, WorkKind.HOURLY, group_id,
+                                        original, hours=hours, source_line=line, message_number=block.number,
+                                        quantity_unit='小时', price_source='待人工确认计时', standard_price_snapshot=Decimal('15'))
+                    identified = True
+                    if any(r.employee_id == employee_id and r.work_date == work_date and
+                           r.kind == WorkKind.HOURLY and r.hours == hours for r in records + proposals):
+                        proposals.append(record)
+                        raise ValueError('疑似重复计时记录：省略了计时标记，请确认类型及是否为独立工作')
+                    raise ValueError('未标明项目或计时，不能仅凭乘以15元确认工资类型')
                 elif body.startswith('货号'):
                     labelled = re.fullmatch(
                         rf'货号\s*[:：]?\s*(?P<code>[A-Za-z0-9][A-Za-z0-9._/-]*)\s+'
@@ -250,7 +264,7 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                 if not identified:
                     inherited = None
                 reason = str(exc)
-                suffix = '' if '员工未绑定' in reason else f'；{catalog.review_candidates(body)}'
+                suffix = '' if identified or HOURLY_START.match(body) or '员工未绑定' in reason else f'；{catalog.review_candidates(body)}'
                 warnings.append(f'第{line}行需人工核对：{reason}；原文：{original}{suffix}')
         # 高度相似消息只做提醒；保留草稿供人工决定，禁止直接重复计入。
         current_records = records[start_records:]

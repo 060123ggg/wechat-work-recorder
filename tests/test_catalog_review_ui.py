@@ -26,8 +26,8 @@ def test_ambiguous_line_is_visible_and_blocks_save(monkeypatch, tmp_path):
     window.parse_text()
     window.review_list.setCurrentRow(0)
     assert window.table.rowCount() == 1
-    assert '8513-70*1.7' in window.review_notes.toPlainText()
-    assert '单价候选：1.7' in window.review_notes.toPlainText()
+    assert '8513-70*1.7' in '\n'.join(window.review_list.item(i).text() for i in range(window.review_list.count()))
+    assert '单价候选：1.7' in '\n'.join(window.review_list.item(i).text() for i in range(window.review_list.count()))
     window.save_mock()
     assert any('仍有未解析行' in msg for msg in messages)
     window.close()

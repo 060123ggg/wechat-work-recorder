@@ -59,7 +59,7 @@ def test_unknown_project_cancel_keeps_original_blocks_entire_copy(ui,monkeypatch
     monkeypatch.setattr(ProjectDialog,'exec',lambda self:self.reject())
     import_body(ui,'猫砂盆20个*10\n计时3')
     assert window.table.rowCount()==1 and window.unresolved_warnings
-    assert '猫砂盆20个*10' in window.review_notes.toPlainText()
+    assert '猫砂盆20个*10' in '\n'.join(window.review_list.item(i).text() for i in range(window.review_list.count()))
     app.clipboard().setText('sentinel')
     window.copy_to_wps()
     assert app.clipboard().text()=='sentinel' and '待核对' in notices[-1]
@@ -134,7 +134,7 @@ def test_missing_sender_can_be_manually_selected_without_nickname_guess(ui,monke
     app,window,_,_=ui
     import_body(ui,'10月17号\n计时3\n8510 2个*0.55',header='2026年10月18日 19:40')
     assert window.table.rowCount()==0
-    assert '发送人待确认' in window.review_notes.toPlainText()
+    assert '发送人待确认' in '\n'.join(window.review_list.item(i).text() for i in range(window.review_list.count()))
     window.review_list.setCurrentRow(0)
     def choose(dialog):
         assert dialog.employee_choice.currentData() is None
@@ -171,15 +171,16 @@ def test_duplicate_requires_decision_then_can_be_included_once(ui,monkeypatch):
     assert window.table.rowCount()==1 and window.unresolved_warnings
     window.review_list.setCurrentRow(0)
     monkeypatch.setattr(ReviewDialog,'exec',lambda dialog:dialog.confirm())
-    # 拒绝时仍保持待核对
+    # 未选择如何处理时仍保持待核对
     monkeypatch.setattr(QMessageBox,'question',lambda *a:QMessageBox.StandardButton.No)
     window.review_ambiguous_line()
     assert window.table.rowCount()==1 and window.unresolved_warnings
-    monkeypatch.setattr(QMessageBox,'question',lambda *a:(questions.append(a[-1]) or QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(ReviewDialog,'exec',lambda dialog:(dialog.duplicate_action.setCurrentIndex(1),dialog.confirm()))
     window.review_ambiguous_line()
     assert window.table.rowCount()==2 and not window.unresolved_warnings
     assert window.reviewed_records()[1].duplicate_confirmed
     assert window.total_label.text()=='总计：2.20元'
+    monkeypatch.setattr(QMessageBox,'question',lambda *a:(questions.append(a[-1]) or QMessageBox.StandardButton.Yes))
     window.copy_to_wps()
     assert app.clipboard().text().splitlines()==['2026/10/18\tE01\t员工01']*2
     window.parse_text()
@@ -225,7 +226,7 @@ def test_completed_copy_is_remembered_after_restart_but_can_be_reviewed(ui,monke
         assert second.table.rowCount()==0 and '本机以前已复制' in second.unresolved_warnings[0]
         assert '高度相似' in second.unresolved_warnings[0]
         second.review_list.setCurrentRow(0)
-        monkeypatch.setattr(ReviewDialog,'exec',lambda dialog:dialog.confirm())
+        monkeypatch.setattr(ReviewDialog,'exec',lambda dialog:(dialog.duplicate_action.setCurrentIndex(1),dialog.confirm()))
         second.review_ambiguous_line()
         assert second.table.rowCount()==1 and not second.unresolved_warnings
         assert second.reviewed_records()[0].duplicate_confirmed

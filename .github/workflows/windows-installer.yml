@@ -1,10 +1,11 @@
-name: Windows 安装包
+name: Windows 双击启动版与安装包
 
 on:
   push:
     branches:
       - feat/windows-installer
       - feat/message-price-upgrade
+      - fix/message-review-navigation
     paths:
       - 'src/**'
       - 'tests/**'
@@ -53,6 +54,8 @@ jobs:
           New-Item -ItemType Directory -Path $target -Force | Out-Null
           Copy-Item (Join-Path $source '*') $target -Recurse -Force
           Copy-Item 'packaging/windows/THIRD_PARTY_NOTICES.txt' 'dist/WeChatWorkRecorder/THIRD_PARTY_NOTICES.txt'
+          Copy-Item 'packaging/windows/start_portable.bat' 'dist/WeChatWorkRecorder/启动微信记工助手.bat'
+          Copy-Item 'packaging/windows/PORTABLE_README.txt' 'dist/WeChatWorkRecorder/使用说明.txt'
           $tessdata = Join-Path $target 'tessdata'
           New-Item -ItemType Directory -Path $tessdata -Force | Out-Null
           $revision = '87416418657359cb625c412a48b6e1d6d41c29bd'
@@ -84,6 +87,30 @@ jobs:
             Add-Content $env:GITHUB_STEP_SUMMARY "Packaged app: $detail"
           }
           if ($process.ExitCode -ne 0) { throw "Packaged application smoke test failed: $($process.ExitCode)" }
+      - name: Smoke-test double-click portable launcher
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # A real cmd.exe launch from a Chinese path containing spaces.
+          $portableDir = Join-Path $env:RUNNER_TEMP '微信记工助手 测试版'
+          Copy-Item 'dist/WeChatWorkRecorder' $portableDir -Recurse
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'wechat-portable-smoke-data'
+          $env:WECHAT_SMOKE_RESULT = Join-Path $env:RUNNER_TEMP 'wechat-portable-smoke.txt'
+          $launcher = Join-Path $portableDir '启动微信记工助手.bat'
+          $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', "`"`"$launcher`" --packaging-smoke-test`"" -PassThru
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Portable launcher did not exit within 60 seconds' }
+          if ($process.ExitCode -ne 0) { throw "Portable launcher failed: $($process.ExitCode)" }
+          if (-not (Test-Path $env:WECHAT_SMOKE_RESULT)) { throw 'Portable launcher did not start the bundled app' }
+          $detail = Get-Content $env:WECHAT_SMOKE_RESULT -Raw
+          Add-Content $env:GITHUB_STEP_SUMMARY "Portable launcher: $detail"
+      - name: Upload portable double-click application
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeChatWorkRecorder-Windows-Portable
+          path: dist/WeChatWorkRecorder/
+          if-no-files-found: error
+          retention-days: 30
       - name: Compile per-user installer
         shell: pwsh
         run: |

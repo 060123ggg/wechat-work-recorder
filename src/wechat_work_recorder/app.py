@@ -2,6 +2,8 @@
 import os
 import sys
 import re
+import sqlite3
+import traceback
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -11,6 +13,7 @@ from . import __version__
 from .catalog import ItemCatalog, normalize_code, valid_catalog_code
 from .catalog_dialog import CatalogDialog, ProjectDialog
 from .message_context import date_for_line
+from .message_widgets import MessageEditor, ReviewList
 from .import_history import ImportHistory
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QTextCursor, QTextFormat
@@ -69,6 +72,7 @@ class MainWindow(QMainWindow):
         self.wps_copy_step = 0
         self.display_records: list[WorkRecord] = []
         self.review_overrides: dict[int, tuple[str, str, WorkRecord]] = {}
+        self.duplicate_resolutions: dict[int, tuple[str, str, str]] = {}
         self.message_blocks = []
         self.message_employees = {}
         self.message_dates = {}
@@ -134,7 +138,8 @@ class MainWindow(QMainWindow):
         self.copy_wps_hi_button.clicked.connect(self.copy_wps_hi)
         wps_controls.addWidget(self.copy_wps_hi_button)
         layout.addLayout(wps_controls)
-        self.output = QPlainTextEdit()
+        self.output = MessageEditor()
+        self.last_source = ''
         self.output.textChanged.connect(self.on_text_changed)
         self.output.setPlaceholderText("在此粘贴聊天文字，或粘贴截图自动 OCR……")
         layout.addWidget(QLabel("微信消息（编号和绑定姓名只用于显示，不修改原文）："))
@@ -143,15 +148,13 @@ class MainWindow(QMainWindow):
         self.message_list.itemClicked.connect(self.select_message_item)
         layout.addWidget(self.message_list)
         layout.addWidget(self.output)
-        layout.addWidget(QLabel("待核对原文与货号候选："))
-        self.review_list = QListWidget()
-        self.review_list.setMaximumHeight(105)
-        self.review_list.itemClicked.connect(self.select_review_item)
+        layout.addWidget(QLabel("待核对问题（按消息排列；点击定位原文并打开审核，取消可暂不处理）："))
+        self.review_list = ReviewList()
+        self.review_list.setMinimumHeight(100)
+        self.review_list.setMaximumHeight(195)
+        self.review_list.currentItemChanged.connect(lambda item, previous: self.select_review_item(item) if item else None)
+        self.review_list.itemClicked.connect(self.activate_review_item)
         layout.addWidget(self.review_list)
-        self.review_notes = QPlainTextEdit()
-        self.review_notes.setReadOnly(True)
-        self.review_notes.setMaximumHeight(100)
-        layout.addWidget(self.review_notes)
         self.table = QTableWidget(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(HEADERS)
         self.table.itemChanged.connect(self.recompute_table)
@@ -178,8 +181,16 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def on_text_changed(self):
+        source = self.output.toPlainText()
+        if source == self.last_source:
+            return  # Display formatting must not invalidate human approvals.
+        self.last_source = source
+        self.invalidate_review()
+
+    def invalidate_review(self):
         self.needs_parse = True
         self.review_overrides.clear()
+        self.duplicate_resolutions.clear()
         self.message_employees.clear()
         self.message_dates.clear()
         self.new_project_prompts.clear()
@@ -188,7 +199,7 @@ class MainWindow(QMainWindow):
         self.confirmed_snapshot = None
 
     def on_group_changed(self, *_):
-        self.on_text_changed()
+        self.invalidate_review()
         self.wps_copy_batch = None
         self.wps_copy_step = 0
         self.display_records = []
@@ -196,7 +207,9 @@ class MainWindow(QMainWindow):
         self.message_blocks = []
         self.message_list.clear()
         self.review_list.clear()
-        self.review_notes.clear()
+        self.warning_entries = []
+        self.output.setExtraSelections([])
+        self.output.set_message_blocks([])
         self.parse_proposals = []
         self.unresolved_warnings = []
         self.price_warnings = []
@@ -230,7 +243,7 @@ class MainWindow(QMainWindow):
         self.unresolved_warnings = []
         self.review_overrides.clear()
         self.needs_parse = True
-        self.on_text_changed()
+        self.invalidate_review()
         self.update_guide()
         self.statusBar().showMessage('17名正式员工已保存到本机；请核对微信群和昵称绑定')
         return True
@@ -271,7 +284,7 @@ class MainWindow(QMainWindow):
         if not self.ensure_roster():
             return
         BindingDialog(self.bindings, self.groups, self).exec()
-        self.on_text_changed()
+        self.invalidate_review()
         self.table.setRowCount(0)
         self.display_records = []
         self.review_overrides.clear()
@@ -323,21 +336,45 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "货号设置无效", str(exc))
 
     def review_ambiguous_line(self):
+        # Qt slot exceptions otherwise only reach stderr (invisible in a GUI build).
+        try:
+            self.open_review()
+        except Exception as exc:
+            traceback.print_exc()
+            QMessageBox.warning(self, '审核无法打开', f'未保存本次审核。请重新解析后再试。\n原因：{exc}')
+
+    def open_review(self):
+        if self.needs_parse:
+            QMessageBox.warning(self, '请先重新解析', '原文或设置已经改变，请先点击「解析文字」，再核对问题')
+            return
         selected_item = self.review_list.currentItem()
-        if selected_item is not None:
-            selected = self.warning_entries[self.review_list.row(selected_item)][0]
+        index = self.review_list.row(selected_item) if selected_item else -1
+        if 0 <= index < len(self.warning_entries):
+            selected = self.warning_entries[index][0]
         else:
             selected = next((warning for warning in self.unresolved_warnings + self.price_warnings if '；原文：' in warning), None)
         line_match = re.match(r'第(\d+)行', selected or '')
-        if not line_match or '；原文：' not in selected:
+        if not line_match:
             QMessageBox.warning(self, '无法核对', '请选择带原文的工作项目；员工问题也可通过昵称绑定管理处理')
             return
         line_number = int(line_match[1])
-        source_lines = self.output.toPlainText().splitlines()
+        if '；原文：' not in selected:
+            number = message_for_line(self.message_blocks, line_number)
+            # An unbound sender warning points at the header, not the work row.
+            related = next((entry for entry in self.warning_entries
+                            if entry[2] == number and '；原文：' in entry[0]), None)
+            if related:
+                selected, line_number, _ = related
+            else:
+                QMessageBox.warning(self, '无法核对', '本项没有工作原文，请在「管理正式员工名册」或「管理昵称绑定」处理')
+                return
+        source = self.output.toPlainText()
+        source_lines = source.splitlines()
         if not 1 <= line_number <= len(source_lines):
             QMessageBox.warning(self, '无法核对', '原文行号已变化，请重新解析')
             return
         original = source_lines[line_number - 1]
+        is_duplicate = '重复' in selected
         block = next((b for b in self.message_blocks if b.start_line <= line_number <= b.end_line), None)
         group = self.group_combo.currentText()
         nickname = block.nickname if block else None
@@ -353,10 +390,35 @@ class MainWindow(QMainWindow):
         if candidate_record and candidate_record.item_code:
             candidates = list(dict.fromkeys([candidate_record.item_code, *candidates]))
 
+        def multiple_projects():
+            related = [r for r in self.parse_proposals + self.display_records if r.source_line == line_number]
+            return (len({(r.kind, r.item_code, r.quantity, r.hours) for r in related}) > 1 or
+                    bool(re.search(r'\d{4}.*[＊*×✘xX]', original) and re.search(r'计时|工时|计\s*\d', original)))
+
+        def resolve_duplicate(action):
+            if multiple_projects():
+                return '同一原文行包含多个工作项目，请先拆成两行再解析，避免忽略其他工作'
+            if self.output.toPlainText() != source or self.group_combo.currentText() != group:
+                return '原文或群已变化，请取消后重新解析'
+            try:
+                self.import_history.audit_review(dict(action=action, source_text=original,
+                    message_number=block.number if block else None, source_line=line_number,
+                    group=group, reason=selected))
+            except (OSError, sqlite3.Error) as exc:
+                return f'无法保存本机审核说明，尚未忽略本项：{exc}'
+            self.duplicate_resolutions[line_number] = (original, group, action)
+            self.parse_text()
+            if any(warning.startswith(f'第{line_number}行') and '重复' in warning for warning in self.unresolved_warnings):
+                self.duplicate_resolutions.pop(line_number, None)
+                return '本项仍有重复问题，处理未生效，请重新核对'
+            return None
+
         def confirm(values):
             kind, code, quantity, price, hours, note = values
-            if re.search(r'\d{4}.*[＊*×✘xX]', original) and re.search(r'计时|工时|计\s*\d', original):
+            if multiple_projects():
                 return '原文同一行包含多个工作项目；请先拆成两行再解析，避免审核时漏记'
+            if self.output.toPlainText() != source or self.group_combo.currentText() != group:
+                return '原文或群已变化，请取消后重新解析'
             if not group or block is None:
                 return '请先选择微信群并重新解析消息'
             chosen = self.employee_by_id.get(dialog.employee_choice.currentData())
@@ -388,12 +450,9 @@ class MainWindow(QMainWindow):
             calculate_amount(record)
             duplicates = [other for other in self.reviewed_records()
                           if other.source_line != line_number and record_key(other) == record_key(record)]
-            if duplicates or '疑似重复' in selected:
-                if '疑似重复' not in selected:
+            if duplicates or is_duplicate:
+                if not is_duplicate:
                     return '疑似重复记录，请核对已有工资明细'
-                if QMessageBox.question(self, '确认疑似重复记录',
-                    '该项与已有工作完全相同或高度相似。确实是另一项独立工作并需再次计薪吗？') != QMessageBox.StandardButton.Yes:
-                    return '疑似重复记录尚未确认，未加入工资表'
                 record = replace(record, duplicate_confirmed=True)
             if nickname:
                 try:
@@ -418,7 +477,10 @@ class MainWindow(QMainWindow):
                               {code: self.catalog.default_price(code) for code in candidates if self.catalog.default_price(code) is not None},
                               employees=self.roster, reason=selected,
                               price_options=[h['price'] for h in self.catalog.price_history(candidate_record.item_code)]
-                              if candidate_record and candidate_record.unit_price is None else (), catalog=self.catalog)
+                              if candidate_record and candidate_record.kind == WorkKind.PIECE and
+                              candidate_record.item_code and candidate_record.unit_price is None else (), catalog=self.catalog,
+                              duplicate=is_duplicate, on_resolve_duplicate=resolve_duplicate,
+                              message_text=block.raw_text if block else original)
         if candidate_record:
             dialog.prefill_record(candidate_record)
         dialog.exec()
@@ -487,7 +549,7 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(0)
             self.display_records = []
             self.unresolved_warnings = ['员工未绑定：请先在「管理正式员工名册」中完成首次设置']
-            self.review_notes.setPlainText('\n'.join(self.unresolved_warnings))
+            self.refresh_review_display()
             self.refresh_total()
             return
         if not self.employees or not self.groups:
@@ -550,9 +612,17 @@ class MainWindow(QMainWindow):
                 else:
                     retained.append(record)
             records = retained
+        for line, (original, resolution_group, _) in list(self.duplicate_resolutions.items()):
+            if resolution_group != group or not 1 <= line <= len(source_lines) or source_lines[line - 1] != original:
+                self.duplicate_resolutions.pop(line, None)
+                continue
+            warnings = [warning for warning in warnings
+                        if not (warning.startswith(f'第{line}行') and '重复' in warning)]
+            records = [record for record in records if record.source_line != line]
         self.unresolved_warnings = warnings
         self.price_warnings = [warning for warning in result.price_warnings
                                if not any(warning.startswith(f'第{line}行') for line in self.review_overrides)
+                               and not any(warning.startswith(f'第{line}行') for line in self.duplicate_resolutions)
                                and not any(warning.startswith(f'第{r.source_line}行') and
                                            (r.source_line, record_key(r)) in self.price_approvals for r in records)]
         self.needs_parse = False
@@ -566,19 +636,31 @@ class MainWindow(QMainWindow):
     def refresh_review_display(self):
         self.warning_entries = []
         self.review_list.clear()
-        display_lines = []
+        self.output.set_message_blocks(self.message_blocks)
+        issues = []
         for warning in self.unresolved_warnings + self.price_warnings:
             found = re.match(r'第(\d+)行', warning)
             line = int(found.group(1)) if found else None
             number = message_for_line(self.message_blocks, line)
+            issues.append((warning, line, number))
+        for warning, line, number in sorted(issues, key=lambda entry: (entry[2] or 0, entry[1] or 0)):
+            block = next((b for b in self.message_blocks if b.number == number), None)
+            employee_id = (self.bindings.resolve(self.group_combo.currentText(), block.nickname)
+                           if block and block.nickname else self.message_employees.get(number))
+            employee = self.employee_by_id.get(employee_id)
+            identity = f'{block.nickname or "人工确认发送人"}（{employee.name}）' if block and employee else f'{block.nickname if block else "发送人待确认"}（未绑定员工）'
+            try:
+                work_date = self.message_dates.get(number) or (date_for_line(block, line) if block and line else None)
+            except ValueError:
+                work_date = None
+            date_label = str(work_date) if work_date else '日期待确认'
             reason = re.sub(r'^第\d+行(?:需人工核对：)?', '', warning)
-            label = f'第{number or 1}条消息｜原文第{line or 1}行｜{reason}'
+            label = f'第{number or 1}条消息｜原文第{line or 1}行｜{identity}｜{date_label}\n{reason}'
             self.warning_entries.append((warning, line, number))
             item = QListWidgetItem(label)
             item.setToolTip(warning)
+            item.setBackground(QColor('#f0f7f3' if (number or 1) % 2 else '#f5f5f5'))
             self.review_list.addItem(item)
-            display_lines.append(label)
-        self.review_notes.setPlainText('\n'.join(display_lines))
         pending = {number for _, _, number in self.warning_entries}
         self.message_list.clear()
         for block in self.message_blocks:
@@ -591,7 +673,7 @@ class MainWindow(QMainWindow):
             item.setToolTip(block.raw_text)
             self.message_list.addItem(item)
 
-    def highlight_message(self, number: int | None):
+    def highlight_message(self, number: int | None, line: int | None = None):
         block = next((entry for entry in self.message_blocks if entry.number == number), None)
         if block is None:
             return
@@ -607,8 +689,20 @@ class MainWindow(QMainWindow):
         selection.cursor = cursor
         selection.format.setBackground(QColor('#fff1a8'))
         selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-        self.output.setExtraSelections([selection])
-        self.output.setTextCursor(cursor)
+        selections = [selection]
+        target = document.findBlockByNumber((line or block.start_line) - 1)
+        focus = QTextCursor(target)
+        if line:
+            focus.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+            focus.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+            issue_selection = QTextEdit.ExtraSelection()
+            issue_selection.cursor = focus
+            issue_selection.format.setBackground(QColor('#ffd38a'))
+            issue_selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            selections.append(issue_selection)
+        self.output.setExtraSelections(selections)
+        # Keep the active cursor at the target, not at the end of a long message.
+        self.output.setTextCursor(focus)
         self.output.ensureCursorVisible()
 
     def select_message_item(self, item):
@@ -617,7 +711,17 @@ class MainWindow(QMainWindow):
     def select_review_item(self, item):
         index = self.review_list.row(item)
         if 0 <= index < len(self.warning_entries):
-            self.highlight_message(self.warning_entries[index][2])
+            _, line, number = self.warning_entries[index]
+            self.highlight_message(number, line)
+            for row in range(self.message_list.count()):
+                if self.message_list.item(row).data(Qt.ItemDataRole.UserRole) == number:
+                    self.message_list.setCurrentRow(row)
+                    self.message_list.scrollToItem(self.message_list.item(row))
+                    break
+
+    def activate_review_item(self, item):
+        self.select_review_item(item)
+        self.review_ambiguous_line()
 
     def render_records(self, records: list[WorkRecord]):
         self.display_records = sorted(records, key=lambda record: (

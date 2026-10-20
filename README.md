@@ -2,15 +2,27 @@
 
 Windows 桌面软件原型。用 PySide6 接收微信群聊天截图，通过本机 Tesseract OCR 识别文字，以规则提取记工信息。按件计算数量 × 单价；计时统一按 **15 元/小时**计算。不使用 AI 或付费 API。
 
-## Windows 下载、安装、启动
+## Windows 双击启动（本次主交付）
 
-安装包由 `feat/message-price-upgrade` 分支的 GitHub Actions 构建。打开仓库的 **Actions → Windows 安装包 → 最近一次成功的运行**，在页面下方的 **Artifacts** 下载 `WeChatWorkRecorder-Windows-Setup`，解压后双击其中的 `WeChatWorkRecorder-Setup-0.2.0.exe`。按提示安装后，双击桌面上的「微信记工助手」图标即可启动。支持 64 位 Windows 10/11；安装包自带 Python、PySide6、Tesseract 和简体中文 OCR 数据，用户不必另装 Python 或 OCR。Actions 的附件可能需要登录 GitHub，默认保留 30 天；如有 Windows 安全提示，请核对下载来源和文件名后自行决定是否运行。当前安装包未做代码签名。
+本轮分支为 `fix/message-review-navigation`，基于最新完整版本 `feat/message-price-upgrade`，不是旧版 main。打开 [Actions 构建列表](https://github.com/060123ggg/wechat-work-recorder/actions/workflows/windows-installer.yml?query=branch%3Afix%2Fmessage-review-navigation)，选择本分支最新**成功**运行，在 **Artifacts** 下载 **WeChatWorkRecorder-Windows-Portable**。
 
-本版已验证的安装附件位于 [0.2.0 成功构建](https://github.com/060123ggg/wechat-work-recorder/actions/runs/39291081102) 的 Artifacts 区域。
+**完整解压 ZIP 到新文件夹，双击「启动微信记工助手.bat」**：先出现黑色窗口，稍后打开助手。确认标题版本 **0.2.1**。支持64位 Windows 10/11，包内带 Python、PySide6、Tesseract 与简体中文 OCR，不需要另装 Python，不需要安装程序。不要只移动一个 exe，旁边的 `_internal`、`tesseract` 等文件夹必须保留。不要在 ZIP 预览内直接打开。附件需要登录 GitHub，默认保留30天。程序未签名，运行前核对仓库及构建来源。
 
-安装包不带真实员工名册、昵称绑定或工资账本。本机数据保存在当前用户的 `%APPDATA%\WechatWorkRecorder`，升级或卸载程序不会主动删除这些数据。首次安装按下文的「使用流程」完成本机设置；已有源码版保存在同一 Windows 用户目录的数据会继续被读取。安装前先备份该目录更稳妥。
+关闭旧程序后再启动新版。本机资料继续保存在当前用户的 `%APPDATA%\WechatWorkRecorder`，程序目录与资料目录分开；解压到新文件夹不会覆盖旧测试版本。本版不改变本机数据结构，不覆盖名册、昵称、价格或以前的工资历史；忽略/合并只在既有审核表追加一条说明。备份该资料目录后测试更稳妥。家里、厂里电脑各有独立资料，不自动同步。
 
-仅供开发者从源码运行：下载对应开发分支的 ZIP，安装 [Python 3.10+](https://www.python.org/downloads/windows/) 及带 `chi_sim` 的 Windows 版 Tesseract，再双击 `start_windows.bat`。该脚本仍保留，但它不等于安装包，会在线安装 Python 依赖。
+可选安装包仍在同次运行的 **WeChatWorkRecorder-Windows-Setup** 中，解压安装 `WeChatWorkRecorder-Setup-0.2.1.exe` 后从桌面图标启动。它与便携版读取相同的用户资料，不能同时打开两个版本。此次优先使用上面的便携版。
+
+源码双击方式仍保留：下载本轮分支 ZIP，先安装 [Python 3.10+](https://www.python.org/downloads/windows/) 以及带 `chi_sim` 的 Windows Tesseract，再双击根目录 `start_windows.bat`。源码脚本会联网安装依赖；便携版没有这些前置要求。
+
+## 0.2.1 消息查看与审核
+
+保留原有员工/昵称、项目价格库、批量文字、截图OCR、分组工资和WPS三段复制。完整原文中的每条消息之间增加留白和绿色分隔线；显示修饰不写入文字，不改变解析行号。问题区合并成一个列表，按消息序号、原文行号排列，显示昵称、绑定姓名、日期和原因，长内容自动换行。
+
+点击问题会自动滚动到原文问题行、同步选中消息标题，并用浅黄色标出完整消息、橙色标出问题行，然后打开统一审核窗口。窗口可查看完整消息及本次工作原文，取消即暂不处理。消息标题可单独点击，跳到该消息开头。
+
+重复计时审核修复了“没有货号却查询货号历史价格”的异常。疑似重复项必须主动选择「独立工作，另计工资」「确实重复，忽略」「合并到已有记录」之一；合并保留已有工资，不叠加工时或金额、不删除历史记录。取消或未选择均保留待核对，继续阻止复制。重复计件也使用同样的决策。裸写 `3.5×15` 不自动入账；与已有计时匹配时仅生成待审核的计时草稿，仍须确认类型和是否独立工作。
+
+忽略/合并只适用于当前未改变的消息批次。修改原文、切换群或重启重新导入后会再次检查，不使用旧的忽略决定静默漏记。多项工作挤在同一原文行且无法安全分开时，请先拆行再解析。详见 [Windows 最简验收步骤](docs/message-review-testing.md)。
 
 ## 0.2 升级与识别说明
 

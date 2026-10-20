@@ -71,7 +71,7 @@ def test_wechat_text_to_table_without_quantity_warning(monkeypatch, tmp_path, wo
     assert [window.table.item(0, column).text() for column in (0, 3, 4, 5, 6)] == [
         '2026/10/12', code, qty, price, amount]
     assert not window.unresolved_warnings
-    assert not window.review_notes.toPlainText()
+    assert not '\n'.join(window.review_list.item(i).text() for i in range(window.review_list.count()))
     assert window.total_label.text() == f'总计：{amount}元'
     assert window.reviewed_records()[0].source_text == work_line
     window.close()
@@ -89,7 +89,7 @@ def test_unknown_nickname_reports_identity_only(monkeypatch, tmp_path):
     app.clipboard().setText('测试昵称\n2026年10月12日 19:52\n8393--6*4')
     window.import_clipboard_text()
     assert window.table.rowCount() == 0
-    notes = window.review_notes.toPlainText()
+    notes = '\n'.join(window.review_list.item(i).text() for i in range(window.review_list.count()))
     assert '员工未绑定' in notes
     assert '缺少有效工作日期' not in notes
     assert '数量边界待确认' not in notes

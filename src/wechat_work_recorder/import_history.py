@@ -45,3 +45,12 @@ class ImportHistory:
                 [(r.employee_id, r.work_date.isoformat(), r.kind.value, r.item_code or '', signature(r)) for r in records])
             connection.executemany('INSERT INTO output_audit(output,record_json) VALUES(?,?)',
                 [(output, json.dumps(asdict(r), ensure_ascii=False, default=str)) for r in records])
+
+    def audit_review(self, decision):
+        """Append a local review explanation without altering remembered wages/schema."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.execute('CREATE TABLE IF NOT EXISTS imports (employee TEXT, work_date TEXT, kind TEXT, code TEXT, signature TEXT, UNIQUE(employee,work_date,kind,code,signature))')
+            connection.execute('CREATE TABLE IF NOT EXISTS output_audit (id INTEGER PRIMARY KEY, created_at TEXT DEFAULT CURRENT_TIMESTAMP, output TEXT, record_json TEXT)')
+            connection.execute('INSERT INTO output_audit(output,record_json) VALUES(?,?)',
+                ('人工审核重复项', json.dumps(decision, ensure_ascii=False)))
