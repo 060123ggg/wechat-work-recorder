@@ -98,12 +98,18 @@ jobs:
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'wechat-portable-smoke-data'
           $env:WECHAT_SMOKE_RESULT = Join-Path $env:RUNNER_TEMP 'wechat-portable-smoke.txt'
           $launcher = Join-Path $portableDir '启动微信记工助手.bat'
-          $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', "`"`"$launcher`" --packaging-smoke-test`"" -PassThru
+          $stdout = Join-Path $env:RUNNER_TEMP 'wechat-portable-stdout.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'wechat-portable-stderr.txt'
+          $process = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/s', '/c', "`"`"$launcher`" --packaging-smoke-test`"" -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Portable launcher did not exit within 60 seconds' }
-          if ($process.ExitCode -ne 0) { throw "Portable launcher failed: $($process.ExitCode)" }
-          if (-not (Test-Path $env:WECHAT_SMOKE_RESULT)) { throw 'Portable launcher did not start the bundled app' }
-          $detail = Get-Content $env:WECHAT_SMOKE_RESULT -Raw
+          $detail = if (Test-Path $env:WECHAT_SMOKE_RESULT) { Get-Content $env:WECHAT_SMOKE_RESULT -Raw } else { 'No application smoke report was created' }
           Add-Content $env:GITHUB_STEP_SUMMARY "Portable launcher: $detail"
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $env:WECHAT_SMOKE_RESULT)) {
+            $console = ((Get-Content $stdout -Raw), (Get-Content $stderr -Raw)) -join ' '
+            $diagnostic = "Portable exit $($process.ExitCode): $detail | $console" -replace "`r?`n", ' '
+            Write-Output "::error title=Portable startup check::$diagnostic"
+            exit 1
+          }
       - name: Upload portable double-click application
         uses: actions/upload-artifact@v4
         with:

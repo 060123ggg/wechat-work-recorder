@@ -30,6 +30,7 @@ def ui(monkeypatch, tmp_path):
     monkeypatch.setattr(QMessageBox, 'warning', lambda *a: notices.append(a[-1]))
     monkeypatch.setattr(QInputDialog, 'getItem', lambda *a: ('', False))
     monkeypatch.setattr(QMessageBox, 'question', lambda *a: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, 'information', lambda *a: None)
     window.show()
     app.processEvents()
     yield app, window, notices
@@ -347,3 +348,41 @@ def test_confirm_callback_exception_stays_visible_and_pending(ui):
     click_and_review(ui, lambda: window.review_button.click(), fail)
     assert '测试写入失败' in notices[-1]
     assert window.table.rowCount() == 0 and window.unresolved_warnings
+
+
+def test_reimport_identical_text_does_not_reuse_ignore_decision(ui):
+    _, window, _ = ui
+    load(ui, '计时3\n计时3')
+    window.review_list.setCurrentRow(0)
+    def ignore(dialog):
+        dialog.duplicate_action.setCurrentIndex(dialog.duplicate_action.findData('ignore'))
+        dialog.confirm()
+    click_and_review(ui, lambda: window.review_button.click(), ignore)
+    assert not window.unresolved_warnings and window.duplicate_resolutions
+    load(ui, '计时3\n计时3')
+    assert len(window.unresolved_warnings) == 1
+    assert not window.duplicate_resolutions
+
+
+def test_reimport_identical_completed_batch_still_checks_local_history(ui):
+    _, window, _ = ui
+    load(ui, '计时3')
+    window.copy_to_wps()
+    window.copy_wps_f()
+    window.copy_wps_hi()
+    assert window.confirmed_snapshot
+    load(ui, '计时3')
+    assert not window.confirmed_snapshot
+    assert window.table.rowCount() == 0
+    assert '本机以前已复制' in window.unresolved_warnings[0]
+
+
+def test_duplicate_word_in_work_note_does_not_allow_ignoring_real_error(ui):
+    _, window, _ = ui
+    load(ui, '计时3小时90分（重复贴标）')
+    window.review_list.setCurrentRow(0)
+    def check(dialog):
+        assert not dialog.is_duplicate
+        assert dialog.duplicate_action.isHidden()
+    click_and_review(ui, lambda: window.review_button.click(), check)
+    assert len(window.unresolved_warnings) == 1 and window.table.rowCount() == 0

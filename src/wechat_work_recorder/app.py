@@ -50,6 +50,11 @@ def unconfirmed_duplicates(records):
 HEADERS = ["日期", "员工编号", "姓名", "货号/项目", "数量/工时", "单价", "单项工资", "当日合计工资"]
 
 
+def duplicate_warning(warning):
+    reason = re.sub(r'^第\d+行(?:需人工核对：)?', '', warning).split('；原文：', 1)[0]
+    return reason.startswith(('疑似重复', '人工确认记录与其他记录重复'))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, ocr=None):
         super().__init__()
@@ -374,7 +379,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, '无法核对', '原文行号已变化，请重新解析')
             return
         original = source_lines[line_number - 1]
-        is_duplicate = '重复' in selected
+        is_duplicate = duplicate_warning(selected)
         block = next((b for b in self.message_blocks if b.start_line <= line_number <= b.end_line), None)
         group = self.group_combo.currentText()
         nickname = block.nickname if block else None
@@ -408,7 +413,7 @@ class MainWindow(QMainWindow):
                 return f'无法保存本机审核说明，尚未忽略本项：{exc}'
             self.duplicate_resolutions[line_number] = (original, group, action)
             self.parse_text()
-            if any(warning.startswith(f'第{line_number}行') and '重复' in warning for warning in self.unresolved_warnings):
+            if any(warning.startswith(f'第{line_number}行') and duplicate_warning(warning) for warning in self.unresolved_warnings):
                 self.duplicate_resolutions.pop(line_number, None)
                 return '本项仍有重复问题，处理未生效，请重新核对'
             return None
@@ -492,6 +497,7 @@ class MainWindow(QMainWindow):
         if not copied:
             QMessageBox.warning(self, "剪贴板为空", "请先在微信中复制聊天文字")
             return
+        self.invalidate_review()  # A new import is a new batch, even with identical text.
         self.output.setPlainText(copied)
         self.parse_text()
 
@@ -531,6 +537,7 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage("剪贴板中没有图片", 5000)
             return
+        self.invalidate_review()
         self.output.clear()
         self.table.setRowCount(0)
         self.display_records = []
@@ -617,7 +624,7 @@ class MainWindow(QMainWindow):
                 self.duplicate_resolutions.pop(line, None)
                 continue
             warnings = [warning for warning in warnings
-                        if not (warning.startswith(f'第{line}行') and '重复' in warning)]
+                        if not (warning.startswith(f'第{line}行') and duplicate_warning(warning))]
             records = [record for record in records if record.source_line != line]
         self.unresolved_warnings = warnings
         self.price_warnings = [warning for warning in result.price_warnings
