@@ -994,10 +994,9 @@ def main() -> int:
         return 1
     if smoke_test:
         # Windows CI 用实际打包后的 exe 验证界面、货号库和中文 OCR 均可加载。
-        import pytesseract
         try:
             window.ocr.recognize(Image.new("RGB", (80, 40), "white"))
-            languages = set(pytesseract.get_languages(config=""))
+            languages = window.ocr.available_languages()
             ready = (window.catalog.codes and {"chi_sim", "eng"} <= languages
                      and window.copy_wps_button.text() and window.copy_wps_f_button.text()
                      and window.copy_wps_hi_button.text())

@@ -93,7 +93,9 @@ def test_october_reference_price_difference_is_not_silently_accepted(catalog):
     assert catalog.default_price('8510') is None
     result=parse('10月17号\n计时 3.5*15\n8510 235个*0.55\n8377 100个*0.2',catalog)
     assert len(result.records)==3 and not result.warnings
-    assert len(result.price_warnings)==2
+    # 本次明写0.55且匹配已导入历史，可识别；未将历史价设为默认。
+    assert len(result.price_warnings)==1
+    assert catalog.default_price('8510') is None
     assert any('8377' in w and '.3' in w and '.2' in w for w in result.price_warnings)
 
 

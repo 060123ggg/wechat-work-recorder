@@ -258,7 +258,8 @@ def parse_messages(text: str, directory: EmployeeDirectory, group_id: str,
                     current = catalog.default_price(record.item_code)
                     if current is not None and current != record.unit_price:
                         price_warnings.append(f'第{line}行需人工核对：{record.item_code} 当前标准价（默认价）{current}元；本次单价{record.unit_price}元；数量{record.quantity}；金额{calculate(record):.2f}元；原文：{original}')
-                    elif current is None and catalog.price_history(record.item_code):
+                    elif (current is None and (history := catalog.price_history(record.item_code))
+                          and record.unit_price not in {Decimal(row['price']) for row in history}):
                         price_warnings.append(f'第{line}行需人工核对：{record.item_code} 当前标准价未确认（多个历史价格），本次单价{record.unit_price}元；数量{record.quantity}；金额{calculate(record):.2f}元；原文：{original}')
             except (ValueError, InvalidOperation) as exc:
                 if not identified:

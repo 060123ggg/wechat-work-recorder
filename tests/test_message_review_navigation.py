@@ -386,3 +386,17 @@ def test_duplicate_word_in_work_note_does_not_allow_ignoring_real_error(ui):
         assert dialog.duplicate_action.isHidden()
     click_and_review(ui, lambda: window.review_button.click(), check)
     assert len(window.unresolved_warnings) == 1 and window.table.rowCount() == 0
+
+
+@pytest.mark.parametrize('price,standard,pending', [('4', None, False), ('6', None, True), ('4', '5', True)])
+def test_explicit_historical_price_is_reference_and_never_overrides_standard(ui, tmp_path, price, standard, pending):
+    _, window, _ = ui
+    path = tmp_path / 'synthetic-prices.csv'
+    path.write_text('code,price,count,unit,month,source\n8393,4,1,件,2026-10,测试\n8393,5,1,件,2026-10,测试\n', encoding='utf-8')
+    window.catalog.import_october_csv(path)
+    if standard:
+        window.catalog.set_default('8393', Decimal(standard))
+    load(ui, f'8393--6*{price}')
+    assert bool(window.price_warnings) == pending
+    assert window.total_label.text() == f'总计：{6 * Decimal(price):.2f}元'
+    assert window.catalog.default_price('8393') == (Decimal(standard) if standard else None)
